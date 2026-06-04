@@ -67,6 +67,7 @@ var mention_resolver: RefCounted = null
 var composer_commands: RefCounted = null
 var composer_autocomplete: RefCounted = null
 var locale_manager: RefCounted = null
+var project_index: RefCounted = null
 
 var _active_assistant_panel: PanelContainer = null
 var _active_status_panel: PanelContainer = null
@@ -122,7 +123,8 @@ func setup(
 	context_builder: RefCounted,
 	tools: RefCounted,
 	skills: RefCounted,
-	locale_mgr: RefCounted = null
+	locale_mgr: RefCounted = null,
+	index_svc: RefCounted = null
 ) -> void:
 	editor_plugin = plugin
 	config_manager = config_mgr
@@ -130,6 +132,7 @@ func setup(
 	editor_tools = tools
 	skills_manager = skills
 	locale_manager = locale_mgr
+	project_index = index_svc
 
 func _ready() -> void:
 	if config_manager == null:
@@ -140,7 +143,13 @@ func _ready() -> void:
 		project_context.setup(editor_plugin)
 	if editor_tools == null and editor_plugin:
 		editor_tools = preload("res://addons/ai_assistant_plugin/scripts/editor_tools.gd").new()
-		editor_tools.setup(editor_plugin)
+		editor_tools.setup(editor_plugin, project_index)
+	if project_index == null and editor_plugin:
+		project_index = preload("res://addons/ai_assistant_plugin/scripts/project_index_service.gd").new()
+		project_index.setup(editor_plugin, config_manager)
+		project_index.connect_filesystem_watch(editor_plugin)
+		if editor_tools and editor_tools.has_method("set_project_index"):
+			editor_tools.set_project_index(project_index)
 	if skills_manager == null:
 		skills_manager = preload("res://addons/ai_assistant_plugin/scripts/skills_manager.gd").new()
 		skills_manager.load_skills(
@@ -149,7 +158,7 @@ func _ready() -> void:
 		)
 	
 	ai_handler = preload("res://addons/ai_assistant_plugin/scripts/ai_model_handler.gd").new()
-	ai_handler.setup(self, config_manager, project_context, editor_tools, skills_manager)
+	ai_handler.setup(self, config_manager, project_context, editor_tools, skills_manager, project_index)
 	ai_handler.query_started.connect(_on_query_started)
 	ai_handler.query_completed.connect(_on_query_completed)
 	ai_handler.query_failed.connect(_on_query_failed)
@@ -174,7 +183,7 @@ func _ready() -> void:
 		locale_manager.setup(config_manager)
 	
 	config_dialog = preload("res://addons/ai_assistant_plugin/scripts/config_dialog.gd").new()
-	config_dialog.setup(config_manager, model_catalog, locale_manager, skills_manager)
+	config_dialog.setup(config_manager, model_catalog, locale_manager, skills_manager, project_index)
 	config_dialog.configuration_saved.connect(_on_configuration_saved)
 	config_dialog.skill_installed.connect(_on_skill_installed_from_catalog)
 	add_child(config_dialog)
@@ -182,7 +191,7 @@ func _ready() -> void:
 	chat_history = preload("res://addons/ai_assistant_plugin/scripts/chat_history.gd").new()
 	chat_history.load_history()
 	mention_resolver = preload("res://addons/ai_assistant_plugin/scripts/mention_resolver.gd").new()
-	mention_resolver.setup(project_context, skills_manager)
+	mention_resolver.setup(project_context, skills_manager, project_index)
 	
 	_apply_composer_styles()
 	_configure_dock_layout()
@@ -192,6 +201,9 @@ func _ready() -> void:
 	_restore_chat_from_history()
 	_refresh_history_ui()
 	_setup_history_ui()
+	if project_index:
+		project_index.start_auto_sync()
+		_connect_index_status_signals()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if prompt_text_edit == null or not prompt_text_edit.has_focus():
@@ -2481,6 +2493,24 @@ func _get_query_options() -> Dictionary:
 		"context_depth": config_manager.get_setting("context_depth", "intermediate"),
 	}
 
+func _connect_index_status_signals() -> void:
+	if project_index == null:
+		return
+	if not project_index.sync_started.is_connected(_on_index_sync_started):
+		project_index.sync_started.connect(_on_index_sync_started)
+	if not project_index.sync_finished.is_connected(_on_index_sync_finished):
+		project_index.sync_finished.connect(_on_index_sync_finished)
+
+func _on_index_sync_started() -> void:
+	if status_label and not _request_busy:
+		status_label.text = _tr("ui.index_syncing")
+
+func _on_index_sync_finished(success: bool, _summary: Dictionary) -> void:
+	if mention_resolver:
+		mention_resolver.rebuild_index()
+	if status_label and not _request_busy:
+		status_label.text = _tr("ui.index_ready") if success else _tr("ui.index_sync_failed")
+
 func _update_harness_label() -> void:
 	if ai_handler == null:
 		harness_label.text = "Harness: base"
@@ -2623,6 +2653,11 @@ func _on_send_button_pressed() -> void:
 	options["message_attachments"] = attachments_copy
 	if mention_resolver:
 		var attached: String = mention_resolver.build_attached_context(prompt)
+		if project_index and bool(config_manager.get_setting("enable_project_index", true)):
+			if project_index.has_method("is_ready") and project_index.is_ready():
+				var index_ctx: String = project_index.build_retrieval_context(prompt)
+				if not index_ctx.is_empty():
+					attached = attached + "\n\n" + index_ctx if not attached.is_empty() else index_ctx
 		var file_block: String = ComposerAttachments.build_file_context_block(attachments_copy)
 		if not file_block.is_empty():
 			attached = attached if not attached.is_empty() else file_block
@@ -2704,7 +2739,7 @@ func _on_skill_installed_from_catalog(_skill_id: String) -> void:
 		String(config_manager.get_setting("active_skill", ""))
 	)
 	if mention_resolver:
-		mention_resolver.setup(project_context, skills_manager)
+		mention_resolver.setup(project_context, skills_manager, project_index)
 		mention_resolver.rebuild_index()
 	setup_skills_dropdown()
 	_update_harness_label()
@@ -2717,8 +2752,10 @@ func _on_configuration_saved() -> void:
 		String(config_manager.get_setting("active_skill", "godot_scene_editing"))
 	)
 	if mention_resolver:
-		mention_resolver.setup(project_context, skills_manager)
+		mention_resolver.setup(project_context, skills_manager, project_index)
 		mention_resolver.rebuild_index()
+	if project_index and bool(config_manager.get_setting("enable_project_index", true)):
+		project_index.start_auto_sync()
 	setup_skills_dropdown()
 	context_checkbox.button_pressed = bool(config_manager.get_setting("include_project_context", true))
 	tools_checkbox.button_pressed = bool(config_manager.get_setting("enable_editor_tools", true))

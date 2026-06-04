@@ -1,0 +1,11 @@
+# AI Assistant Plugin — paths excluded from project index / rutas excluidas del índice
+# Copy to res://.aiignore in your game project (optional)
+# Copia a res://.aiignore en tu proyecto (opcional)
+
+.import/
+.godot/
+node_modules/
+build/
+dist/
+*.import
+addons/other_heavy_addon/

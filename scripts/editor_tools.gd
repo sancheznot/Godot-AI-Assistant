@@ -14,9 +14,14 @@ const ALLOWED_NODE_TYPES := [
 ]
 
 var _editor_plugin: EditorPlugin = null
+var _project_index: RefCounted = null
 
-func setup(editor_plugin: EditorPlugin) -> void:
+func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null) -> void:
 	_editor_plugin = editor_plugin
+	_project_index = project_index
+
+func set_project_index(project_index: RefCounted) -> void:
+	_project_index = project_index
 
 func get_tools_prompt() -> String:
 	return """## Editor tools
@@ -40,6 +45,8 @@ Inspection (use ONE tool max, prefer @ mentions / attached context first):
 - inspect_node: params {"node_path":"Root/Child"} (includes node groups)
 - list_project_files: params {"path":"res://Data/SceneBuilder","extension":".tscn","limit":50}
 - find_project_paths: params {"query":"Wall","path":"res://Data/SceneBuilder","extensions":[".tscn",".tres"],"limit":80}
+- search_project_index: params {"query":"Wall Floor_2","kinds":["scenebuilder","scene","file"],"limit":24,"mode":"hybrid"} — hybrid lexical+semantic local search (modes: hybrid, semantic, lexical)
+- search_project_docs: params {"query":"CharacterBody3D move_and_slide","limit":12,"mode":"hybrid"} — project README/markdown + Godot ClassDB + global class_name docs (all local)
 - resolve_project_path: params {"path":"res://data/SceneBuilder"} — fixes @ prefix and Linux case (Data vs data)
 - list_scene_builder_catalog: params {"path":"res://Data/SceneBuilder"} — categories + sample asset paths
 - get_tilemap_cells: params {"node_path":"Root/TileMapLayer","limit":200}
@@ -70,7 +77,8 @@ Scripting (create AND attach a script in ONE call):
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
-- To discover assets, use find_project_paths or list_scene_builder_catalog scoped to res://Data/SceneBuilder — do NOT call list_project_files repeatedly from res:// (results truncate).
+- To discover assets, use search_project_index, find_project_paths or list_scene_builder_catalog scoped to res://Data/SceneBuilder — do NOT call list_project_files repeatedly from res:// (results truncate).
+- For Godot API / README / class_name docs, use search_project_docs (local ClassDB + project markdown).
 - For design choices (floor height, layout), call ask_user with a clear question instead of guessing or stopping.
 - After fixing scripts, call get_script_errors (or get_runtime_errors while the game runs) to verify; errors are cleared on read so the next check is fresh.
 - Use res:// paths only. NEVER prefix paths with "@" (write res://... not @res://...).
@@ -106,6 +114,8 @@ func list_tool_names() -> Array[String]:
 		"rotate_node_3d",
 		"create_box_mesh",
 		"find_project_paths",
+		"search_project_index",
+		"search_project_docs",
 		"resolve_project_path",
 		"list_scene_builder_catalog",
 		"place_scene_builder_item",
@@ -172,6 +182,10 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_list_project_files(params)
 		"find_project_paths":
 			result = _tool_find_project_paths(params)
+		"search_project_index":
+			result = _tool_search_project_index(params)
+		"search_project_docs":
+			result = _tool_search_project_docs(params)
 		"resolve_project_path":
 			result = _tool_resolve_project_path(params)
 		"list_scene_builder_catalog":
@@ -272,6 +286,8 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"get_selection",
 	"list_project_files",
 	"find_project_paths",
+	"search_project_index",
+	"search_project_docs",
 	"resolve_project_path",
 	"list_scene_builder_catalog",
 	"ask_user",
@@ -417,7 +433,7 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"errors": result.get("errors", []),
 				"cleared": bool(result.get("cleared", false)),
 			}
-		"list_project_files", "find_project_paths", "list_scene_builder_catalog", "resolve_project_path":
+		"list_project_files", "find_project_paths", "search_project_index", "search_project_docs", "list_scene_builder_catalog", "resolve_project_path":
 			var files: Array = result.get("files", result.get("matches", result.get("categories", [])))
 			var slim_result: Dictionary = {
 				"tool": tool_name,
@@ -1421,15 +1437,126 @@ func _tool_find_project_paths(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "query is required (e.g. Wall, Door, Ground)"}
 	var extensions: Array = params.get("extensions", [".tscn", ".tres", ".glb", ".gltf"])
 	var limit := clampi(int(params.get("limit", 80)), 1, 200)
-	var matches: Array[String] = []
-	_find_matching_files(root_path, query, extensions, limit, matches)
+	if _project_index != null and _project_index.has_method("is_ready") and _project_index.is_ready():
+		var kinds: Array = ["scenebuilder", "file"]
+		if root_path == "res://" or "scenebuilder" in root_path.to_lower():
+			kinds = ["scenebuilder", "file", "scene"]
+		var hits: Array = _project_index.search(query, kinds, limit * 2)
+		var matches: Array[String] = []
+		for hit in hits:
+			if not hit is Dictionary:
+				continue
+			var entry: Dictionary = hit.get("entry", {})
+			var candidate: String = String(entry.get("path", entry.get("tres", entry.get("scene", ""))))
+			if candidate.is_empty():
+				candidate = String(entry.get("scene", ""))
+			if candidate.is_empty():
+				continue
+			if root_path != "res://" and not candidate.begins_with(root_path):
+				continue
+			for ext in extensions:
+				if candidate.ends_with(String(ext)):
+					if not matches.has(candidate):
+						matches.append(candidate)
+					break
+			if matches.size() >= limit:
+				break
+		if not matches.is_empty():
+			return {
+				"ok": true,
+				"path": root_path,
+				"query": query,
+				"matches": matches,
+				"count": matches.size(),
+				"truncated": matches.size() >= limit,
+				"source": "project_index",
+			}
+	var matches_fs: Array[String] = []
+	_find_matching_files(root_path, query, extensions, limit, matches_fs)
 	return {
 		"ok": true,
 		"path": root_path,
 		"query": query,
+		"matches": matches_fs,
+		"count": matches_fs.size(),
+		"truncated": matches_fs.size() >= limit,
+	}
+
+func _tool_search_project_index(params: Dictionary) -> Dictionary:
+	if _project_index == null or not _project_index.has_method("is_ready") or not _project_index.is_ready():
+		return {
+			"ok": false,
+			"error": "Project index not ready. Open Config → Indexing and run Sync Now.",
+		}
+	var query := String(params.get("query", "")).strip_edges()
+	if query.is_empty():
+		return {"ok": false, "error": "query is required (e.g. Wall Floor_2 DoorScript)"}
+	var kinds: Array = params.get("kinds", [])
+	var mode := String(params.get("mode", "hybrid")).strip_edges().to_lower()
+	if mode.is_empty():
+		mode = "hybrid"
+	var limit := clampi(int(params.get("limit", 24)), 1, 100)
+	var hits: Array = _project_index.search(query, kinds, limit, mode)
+	var matches: Array = []
+	for hit in hits:
+		if not hit is Dictionary:
+			continue
+		var entry: Dictionary = hit.get("entry", {})
+		matches.append({
+			"kind": hit.get("kind", ""),
+			"score": hit.get("score", 0.0),
+			"source": hit.get("source", mode),
+			"path": entry.get("path", entry.get("tres", entry.get("scene", ""))),
+			"item": entry.get("item", entry.get("name", "")),
+			"category": entry.get("category", ""),
+			"preview": entry.get("preview", ""),
+		})
+	return {
+		"ok": true,
+		"query": query,
+		"mode": mode,
+		"semantic_ready": _project_index.is_semantic_ready() if _project_index.has_method("is_semantic_ready") else false,
 		"matches": matches,
 		"count": matches.size(),
-		"truncated": matches.size() >= limit,
+	}
+
+func _tool_search_project_docs(params: Dictionary) -> Dictionary:
+	if _project_index == null or not _project_index.has_method("is_ready") or not _project_index.is_ready():
+		return {
+			"ok": false,
+			"error": "Project index not ready. Open Config → Indexing and run Sync Now.",
+		}
+	var query := String(params.get("query", "")).strip_edges()
+	if query.is_empty():
+		return {"ok": false, "error": "query is required (e.g. CharacterBody3D, move_and_slide, README)"}
+	var mode := String(params.get("mode", "hybrid")).strip_edges().to_lower()
+	if mode.is_empty():
+		mode = "hybrid"
+	var limit := clampi(int(params.get("limit", 12)), 1, 50)
+	var hits: Array = []
+	if _project_index.has_method("search_docs"):
+		hits = _project_index.search_docs(query, limit, mode)
+	else:
+		hits = _project_index.search(query, ["doc"], limit, mode)
+	var matches: Array = []
+	for hit in hits:
+		if not hit is Dictionary:
+			continue
+		var entry: Dictionary = hit.get("entry", {})
+		matches.append({
+			"kind": "doc",
+			"score": hit.get("score", 0.0),
+			"source": entry.get("source", hit.get("source", "")),
+			"title": entry.get("title", ""),
+			"path": entry.get("path", ""),
+			"preview": entry.get("preview", ""),
+		})
+	return {
+		"ok": true,
+		"query": query,
+		"mode": mode,
+		"matches": matches,
+		"count": matches.size(),
 	}
 
 func _tool_resolve_project_path(params: Dictionary) -> Dictionary:

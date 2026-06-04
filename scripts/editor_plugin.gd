@@ -9,6 +9,7 @@ var project_context: RefCounted
 var editor_tools: RefCounted
 var skills_manager: RefCounted
 var locale_manager: RefCounted
+var project_index: RefCounted = null
 var debugger_error_bridge: EditorDebuggerPlugin = null
 
 func _enter_tree() -> void:
@@ -17,8 +18,11 @@ func _enter_tree() -> void:
 	locale_manager.setup(config_manager)
 	project_context = preload("res://addons/ai_assistant_plugin/scripts/project_context.gd").new()
 	project_context.setup(self)
+	project_index = preload("res://addons/ai_assistant_plugin/scripts/project_index_service.gd").new()
+	project_index.setup(self, config_manager)
+	project_index.connect_filesystem_watch(self)
 	editor_tools = preload("res://addons/ai_assistant_plugin/scripts/editor_tools.gd").new()
-	editor_tools.setup(self)
+	editor_tools.setup(self, project_index)
 	debugger_error_bridge = preload("res://addons/ai_assistant_plugin/scripts/debugger_error_bridge.gd").new()
 	debugger_error_bridge.setup(self)
 	add_debugger_plugin(debugger_error_bridge)
@@ -35,9 +39,12 @@ func _enter_tree() -> void:
 	
 	plugin_control = ui_scene.instantiate()
 	if plugin_control.has_method("setup"):
-		plugin_control.setup(self, config_manager, project_context, editor_tools, skills_manager, locale_manager)
+		plugin_control.setup(
+			self, config_manager, project_context, editor_tools, skills_manager, locale_manager, project_index
+		)
 	plugin_control.custom_minimum_size = Vector2.ZERO
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, plugin_control)
+	project_index.start_auto_sync()
 	print("AI Assistant Plugin added to editor")
 
 func _exit_tree() -> void:

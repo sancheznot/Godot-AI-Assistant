@@ -233,7 +233,7 @@ func _get_agent_instructions() -> String:
 		+ "Do NOT narrate plans ('I will explore…', 'Voy a…') without tool calls in the SAME message.\n"
 		+ "SceneBuilder assets live under res://Data/SceneBuilder (capital D). "
 		+ "Bootstrap context may already include catalog + snapshot — do NOT re-list res:// from scratch.\n"
-		+ "Discovery: find_project_paths, list_scene_builder_catalog, resolve_project_path.\n"
+		+ "Discovery: search_project_index (hybrid local), search_project_docs (Godot API + README), find_project_paths, list_scene_builder_catalog.\n"
 		+ "Placement: place_scene_builder_item or instance_scene, then save_scene when done.\n"
 		+ "Design choices: ask_user tool (pauses until user replies).\n"
 		+ "Scripts: create_script in ONE step. Read-only inspect tools do NOT consume edit steps.\n"

@@ -22,6 +22,7 @@ var model_catalog: RefCounted = null
 var locale_manager: RefCounted = null
 var skills_manager: RefCounted = null
 var skills_catalog: RefCounted = null
+var project_index: RefCounted = null
 var provider_sections: Dictionary = {}
 var _skills_list_vbox: VBoxContainer = null
 var _skills_installed_vbox: VBoxContainer = null
@@ -29,17 +30,36 @@ var _skills_status_label: Label = null
 var _skills_search_edit: LineEdit = null
 var _skills_search_button: Button = null
 var _remote_skill_results: Array = []
+var _index_status_label: Label = null
+var _index_progress_bar: ProgressBar = null
+var _index_sync_button: Button = null
+var _index_delete_button: Button = null
+var _index_section_grid: GridContainer = null
+var _docs_md_checkbox: CheckBox = null
+var _docs_godot_checkbox: CheckBox = null
+var _docs_global_checkbox: CheckBox = null
 
 func setup(
 	config_mgr: RefCounted,
 	catalog: RefCounted = null,
 	locale_mgr: RefCounted = null,
-	skills_mgr: RefCounted = null
+	skills_mgr: RefCounted = null,
+	index_svc: RefCounted = null
 ) -> void:
 	config_manager = config_mgr
 	model_catalog = catalog
 	locale_manager = locale_mgr
 	skills_manager = skills_mgr
+	project_index = index_svc
+	if project_index:
+		if not project_index.sync_started.is_connected(_on_index_sync_started):
+			project_index.sync_started.connect(_on_index_sync_started)
+		if not project_index.sync_progress.is_connected(_on_index_sync_progress):
+			project_index.sync_progress.connect(_on_index_sync_progress)
+		if not project_index.sync_finished.is_connected(_on_index_sync_finished):
+			project_index.sync_finished.connect(_on_index_sync_finished)
+		if not project_index.index_deleted.is_connected(_on_index_deleted):
+			project_index.index_deleted.connect(_on_index_deleted)
 	if skills_catalog == null:
 		skills_catalog = preload("res://addons/ai_assistant_plugin/scripts/skills_catalog_client.gd").new()
 		skills_catalog.setup(self)
@@ -97,6 +117,9 @@ func _build_ui() -> void:
 	
 	tabs.add_child(_make_skills_tab())
 	tabs.set_tab_title(tabs.get_tab_count() - 1, _tr("config.skills"))
+	
+	tabs.add_child(_make_indexing_tab())
+	tabs.set_tab_title(tabs.get_tab_count() - 1, _tr("config.indexing"))
 	
 	var providers_scroll := ScrollContainer.new()
 	providers_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -271,6 +294,226 @@ func _make_settings_section() -> PanelContainer:
 	
 	provider_sections["_settings"] = grid
 	return panel
+
+func _make_indexing_tab() -> Control:
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", 10)
+	root.add_child(_make_section_header(_tr("config.indexing"), _tr("config.indexing_hint")))
+	
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL_INNER, 8))
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 10)
+	panel.add_child(grid)
+	_index_section_grid = grid
+	
+	grid.add_child(_make_field_label(_tr("config.enable_project_index")))
+	var enable_index := CheckBox.new()
+	enable_index.name = "EnableProjectIndex"
+	enable_index.button_pressed = bool(config_manager.get_setting("enable_project_index", true))
+	enable_index.text = _tr("config.enable_project_index_hint")
+	_style_checkbox(enable_index)
+	grid.add_child(enable_index)
+	
+	grid.add_child(_make_field_label(_tr("config.index_on_startup")))
+	var index_startup := CheckBox.new()
+	index_startup.name = "IndexOnStartup"
+	index_startup.button_pressed = bool(config_manager.get_setting("index_on_startup", true))
+	index_startup.text = _tr("config.index_on_startup_hint")
+	_style_checkbox(index_startup)
+	grid.add_child(index_startup)
+	
+	grid.add_child(_make_field_label(_tr("config.index_auto_sync")))
+	var index_auto := CheckBox.new()
+	index_auto.name = "IndexAutoSync"
+	index_auto.button_pressed = bool(config_manager.get_setting("index_auto_sync", true))
+	index_auto.text = _tr("config.index_auto_sync_hint")
+	_style_checkbox(index_auto)
+	grid.add_child(index_auto)
+	
+	grid.add_child(_make_field_label(_tr("config.index_max_age_hours")))
+	var index_age := SpinBox.new()
+	index_age.name = "IndexMaxAgeHours"
+	index_age.min_value = 0
+	index_age.max_value = 720
+	index_age.step = 1
+	index_age.value = float(config_manager.get_setting("index_max_age_hours", 24))
+	index_age.custom_minimum_size = Vector2(120, 28)
+	_style_spin_box(index_age)
+	grid.add_child(index_age)
+	
+	grid.add_child(_make_field_label(_tr("config.enable_semantic_index")))
+	var enable_semantic := CheckBox.new()
+	enable_semantic.name = "EnableSemanticIndex"
+	enable_semantic.button_pressed = bool(config_manager.get_setting("enable_semantic_index", true))
+	enable_semantic.text = _tr("config.enable_semantic_index_hint")
+	_style_checkbox(enable_semantic)
+	grid.add_child(enable_semantic)
+	
+	grid.add_child(_make_field_label(_tr("config.embedding_model")))
+	var embedding_model := LineEdit.new()
+	embedding_model.name = "EmbeddingModel"
+	embedding_model.text = String(config_manager.get_setting("embedding_model", "nomic-embed-text"))
+	embedding_model.placeholder_text = "nomic-embed-text"
+	embedding_model.custom_minimum_size = Vector2(220, 28)
+	_style_line_edit(embedding_model)
+	grid.add_child(embedding_model)
+	
+	grid.add_child(_make_field_label(_tr("config.embedding_provider")))
+	var embedding_provider := OptionButton.new()
+	embedding_provider.name = "EmbeddingProvider"
+	for provider_option in [["ollama", "Ollama"], ["lmstudio", "LM Studio"]]:
+		embedding_provider.add_item(String(provider_option[1]))
+		embedding_provider.set_item_metadata(embedding_provider.item_count - 1, String(provider_option[0]))
+		if String(provider_option[0]) == String(config_manager.get_setting("embedding_provider", "ollama")):
+			embedding_provider.select(embedding_provider.item_count - 1)
+	_style_option_button(embedding_provider)
+	grid.add_child(embedding_provider)
+	
+	grid.add_child(_make_field_label(_tr("config.semantic_max_chunks")))
+	var semantic_chunks := SpinBox.new()
+	semantic_chunks.name = "SemanticMaxChunks"
+	semantic_chunks.min_value = 32
+	semantic_chunks.max_value = 2000
+	semantic_chunks.step = 32
+	semantic_chunks.value = float(config_manager.get_setting("semantic_max_chunks", 400))
+	semantic_chunks.custom_minimum_size = Vector2(120, 28)
+	_style_spin_box(semantic_chunks)
+	grid.add_child(semantic_chunks)
+	
+	grid.add_child(_make_field_label(_tr("config.enable_docs_index")))
+	var enable_docs := CheckBox.new()
+	enable_docs.name = "EnableDocsIndex"
+	enable_docs.button_pressed = bool(config_manager.get_setting("enable_docs_index", true))
+	enable_docs.text = _tr("config.enable_docs_index_hint")
+	_style_checkbox(enable_docs)
+	grid.add_child(enable_docs)
+	
+	grid.add_child(_make_field_label(_tr("config.docs_sources")))
+	var docs_sources := VBoxContainer.new()
+	docs_sources.name = "DocsSources"
+	docs_sources.add_theme_constant_override("separation", 4)
+	_docs_md_checkbox = CheckBox.new()
+	_docs_md_checkbox.name = "DocsIncludeProjectMd"
+	_docs_md_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_project_md", true))
+	_docs_md_checkbox.text = _tr("config.docs_include_project_md")
+	_style_checkbox(_docs_md_checkbox)
+	docs_sources.add_child(_docs_md_checkbox)
+	_docs_godot_checkbox = CheckBox.new()
+	_docs_godot_checkbox.name = "DocsIncludeGodotClasses"
+	_docs_godot_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_godot_classes", true))
+	_docs_godot_checkbox.text = _tr("config.docs_include_godot_classes")
+	_style_checkbox(_docs_godot_checkbox)
+	docs_sources.add_child(_docs_godot_checkbox)
+	_docs_global_checkbox = CheckBox.new()
+	_docs_global_checkbox.name = "DocsIncludeGlobalClasses"
+	_docs_global_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_global_classes", true))
+	_docs_global_checkbox.text = _tr("config.docs_include_global_classes")
+	_style_checkbox(_docs_global_checkbox)
+	docs_sources.add_child(_docs_global_checkbox)
+	grid.add_child(docs_sources)
+	
+	root.add_child(panel)
+	
+	_index_status_label = Label.new()
+	_index_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_index_status_label.add_theme_font_size_override("font_size", 11)
+	_index_status_label.add_theme_color_override("font_color", COLOR_MUTED)
+	root.add_child(_index_status_label)
+	
+	_index_progress_bar = ProgressBar.new()
+	_index_progress_bar.custom_minimum_size = Vector2(0, 8)
+	_index_progress_bar.show_percentage = false
+	_index_progress_bar.value = 0
+	root.add_child(_index_progress_bar)
+	
+	var button_row := HBoxContainer.new()
+	button_row.add_theme_constant_override("separation", 8)
+	_index_sync_button = Button.new()
+	_index_sync_button.text = _tr("config.index_sync_now")
+	_index_sync_button.custom_minimum_size = Vector2(120, 30)
+	_style_button(_index_sync_button, true)
+	_index_sync_button.pressed.connect(_on_index_sync_pressed)
+	button_row.add_child(_index_sync_button)
+	_index_delete_button = Button.new()
+	_index_delete_button.text = _tr("config.index_delete")
+	_index_delete_button.custom_minimum_size = Vector2(120, 30)
+	_style_button(_index_delete_button, false)
+	_index_delete_button.pressed.connect(_on_index_delete_pressed)
+	button_row.add_child(_index_delete_button)
+	root.add_child(button_row)
+	
+	_refresh_index_status_label()
+	return root
+
+func _refresh_index_status_label() -> void:
+	if _index_status_label == null:
+		return
+	if project_index == null:
+		_index_status_label.text = _tr("config.index_unavailable")
+		return
+	var status: Dictionary = project_index.get_status()
+	if project_index.is_syncing():
+		_index_status_label.text = _tr("config.index_syncing")
+		return
+	if bool(status.get("ready", false)):
+		var semantic_line: String = ""
+		if bool(status.get("semantic_ready", false)):
+			semantic_line = _tr("config.index_semantic_ready", [int(status.get("embedding_chunks", 0))])
+		else:
+			semantic_line = _tr("config.index_semantic_pending")
+		_index_status_label.text = "%s\n%s" % [
+			_tr("config.index_status_ready", [
+				int(status.get("indexed_files", 0)),
+				int(status.get("scenebuilder_items", 0)),
+				int(status.get("scene_summaries", 0)),
+				int(status.get("symbols", 0)),
+			]) + " · " + _tr("config.index_docs_count", [int(status.get("docs", 0))]),
+			semantic_line,
+		]
+	else:
+		_index_status_label.text = _tr("config.index_status_empty")
+
+func _on_index_sync_pressed() -> void:
+	if project_index == null:
+		return
+	if _index_sync_button:
+		_index_sync_button.disabled = true
+	if _index_delete_button:
+		_index_delete_button.disabled = true
+	project_index.sync_index()
+
+func _on_index_delete_pressed() -> void:
+	if project_index == null:
+		return
+	project_index.delete_index()
+
+func _on_index_sync_started() -> void:
+	if _index_progress_bar:
+		_index_progress_bar.value = 0
+	if _index_status_label:
+		_index_status_label.text = _tr("config.index_syncing")
+
+func _on_index_sync_progress(ratio: float, _message: String) -> void:
+	if _index_progress_bar:
+		_index_progress_bar.value = clampf(ratio * 100.0, 0.0, 100.0)
+
+func _on_index_sync_finished(_success: bool, _summary: Dictionary) -> void:
+	if _index_sync_button:
+		_index_sync_button.disabled = false
+	if _index_delete_button:
+		_index_delete_button.disabled = false
+	if _index_progress_bar:
+		_index_progress_bar.value = 100.0
+	_refresh_index_status_label()
+
+func _on_index_deleted() -> void:
+	if _index_progress_bar:
+		_index_progress_bar.value = 0
+	_refresh_index_status_label()
 
 func _make_skills_tab() -> Control:
 	var root := VBoxContainer.new()
@@ -774,6 +1017,13 @@ func _on_save_pressed() -> void:
 			var spin_node := settings_grid.get_node_or_null(spin_name)
 			if spin_node is SpinBox:
 				_commit_spin_box(spin_node as SpinBox)
+		if _index_section_grid:
+			var age_spin := _index_section_grid.get_node_or_null("IndexMaxAgeHours")
+			if age_spin is SpinBox:
+				_commit_spin_box(age_spin as SpinBox)
+			var chunks_spin := _index_section_grid.get_node_or_null("SemanticMaxChunks")
+			if chunks_spin is SpinBox:
+				_commit_spin_box(chunks_spin as SpinBox)
 		var default_provider: OptionButton = settings_grid.get_node("DefaultProvider") as OptionButton
 		var context_depth_node: OptionButton = settings_grid.get_node("ContextDepth") as OptionButton
 		var ui_language_node: OptionButton = settings_grid.get_node("UiLanguage") as OptionButton
@@ -787,6 +1037,56 @@ func _on_save_pressed() -> void:
 		config_manager.set_setting("enable_thinking", settings_grid.get_node("EnableThinking").button_pressed)
 		config_manager.set_setting("enable_agent_loop", settings_grid.get_node("EnableAgentLoop").button_pressed)
 		config_manager.set_setting("agent_max_steps", int(settings_grid.get_node("AgentMaxSteps").value))
+	
+	if _index_section_grid:
+		config_manager.set_setting(
+			"enable_project_index",
+			_index_checkbox_pressed("EnableProjectIndex", true)
+		)
+		config_manager.set_setting(
+			"index_on_startup",
+			_index_checkbox_pressed("IndexOnStartup", true)
+		)
+		config_manager.set_setting(
+			"index_auto_sync",
+			_index_checkbox_pressed("IndexAutoSync", true)
+		)
+		var age_spin := _index_section_grid.get_node_or_null("IndexMaxAgeHours")
+		if age_spin is SpinBox:
+			config_manager.set_setting("index_max_age_hours", int((age_spin as SpinBox).value))
+		config_manager.set_setting(
+			"enable_semantic_index",
+			_index_checkbox_pressed("EnableSemanticIndex", true)
+		)
+		var model_edit := _index_section_grid.get_node_or_null("EmbeddingModel")
+		if model_edit is LineEdit:
+			config_manager.set_setting("embedding_model", (model_edit as LineEdit).text.strip_edges())
+		var embed_provider := _index_section_grid.get_node_or_null("EmbeddingProvider") as OptionButton
+		if embed_provider:
+			config_manager.set_setting(
+				"embedding_provider",
+				String(embed_provider.get_item_metadata(embed_provider.selected))
+			)
+		var chunks_spin := _index_section_grid.get_node_or_null("SemanticMaxChunks")
+		if chunks_spin is SpinBox:
+			config_manager.set_setting("semantic_max_chunks", int((chunks_spin as SpinBox).value))
+		config_manager.set_setting(
+			"enable_docs_index",
+			_index_checkbox_pressed("EnableDocsIndex", true)
+		)
+		config_manager.set_setting(
+			"docs_include_project_md",
+			_docs_md_checkbox.button_pressed if _docs_md_checkbox else true
+		)
+		config_manager.set_setting(
+			"docs_include_godot_classes",
+			_docs_godot_checkbox.button_pressed if _docs_godot_checkbox else true
+		)
+		config_manager.set_setting(
+			"docs_include_global_classes",
+			_docs_global_checkbox.button_pressed if _docs_global_checkbox else true
+		)
+		config_manager.set_setting("semantic_index_on_sync", true)
 	
 	for provider_id in config_manager.PROVIDER_IDS:
 		var grid: GridContainer = provider_sections.get(provider_id)
@@ -820,6 +1120,7 @@ func open_dialog() -> void:
 		_build_ui()
 		if model_catalog:
 			model_catalog.refresh_all()
+		_refresh_index_status_label()
 	popup_centered()
 
 func _populate_provider_models(provider_id: String, option: OptionButton, selected_model: String) -> void:
@@ -857,6 +1158,17 @@ func _refresh_provider_models(provider_id: String, option: OptionButton) -> void
 			_populate_provider_models(provider_id, option, selected_model)
 	model_catalog.provider_models_updated.connect(on_models_updated, CONNECT_ONE_SHOT)
 	model_catalog.refresh_provider(provider_id)
+
+func _index_find_control(name: String) -> Node:
+	if _index_section_grid == null:
+		return null
+	return _index_section_grid.find_child(name, true, false)
+
+func _index_checkbox_pressed(name: String, default_value: bool = false) -> bool:
+	var node := _index_find_control(name)
+	if node is CheckBox:
+		return (node as CheckBox).button_pressed
+	return default_value
 
 func _tr(key: String, args: Array = []) -> String:
 	if locale_manager:

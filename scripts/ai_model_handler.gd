@@ -23,6 +23,7 @@ var config_manager: RefCounted = null
 var project_context: RefCounted = null
 var editor_tools: RefCounted = null
 var skills_manager: RefCounted = null
+var project_index: RefCounted = null
 var harness: RefCounted = null
 
 var http_request: HTTPRequest = null
@@ -69,12 +70,14 @@ func setup(
 	config_mgr: RefCounted,
 	context_builder: RefCounted,
 	tools: RefCounted,
-	skills: RefCounted
+	skills: RefCounted,
+	index_svc: RefCounted = null
 ) -> void:
 	config_manager = config_mgr
 	project_context = context_builder
 	editor_tools = tools
 	skills_manager = skills
+	project_index = index_svc
 	
 	harness = preload("res://addons/ai_assistant_plugin/scripts/harness.gd").new()
 	harness.setup(config_mgr, context_builder, tools, skills)
@@ -1184,7 +1187,20 @@ func _tool_source_text(parsed: Dictionary, content: String, raw_text: String) ->
 	return raw_text.strip_edges()
 
 func _bootstrap_agent_context(user_prompt: String) -> String:
-	if editor_tools == null or _agent_code_only:
+	if _agent_code_only:
+		return ""
+	if project_index != null and project_index.has_method("is_ready"):
+		if bool(config_manager.get_setting("enable_project_index", true)) and project_index.is_ready():
+			var indexed: String = String(project_index.build_agent_bootstrap(user_prompt))
+			if not indexed.is_empty():
+				if _active_user_language == "es":
+					return (
+						"Contexto precargado del índice (NO vuelvas a escanear res:// entero). "
+						+ "Usa search_project_index si necesitas más paths y EMPIEZA a colocar assets:\n"
+						+ indexed
+					)
+				return indexed
+	if editor_tools == null:
 		return ""
 	var lower: String = user_prompt.to_lower()
 	var keywords: PackedStringArray = [

@@ -8,18 +8,26 @@ const INDEX_EXTENSIONS := [".gd", ".tscn", ".cs", ".md", ".json", ".cfg", ".tres
 
 var project_context: RefCounted = null
 var skills_manager: RefCounted = null
+var project_index: RefCounted = null
 var _file_index: Array = []
 var _folder_index: Array = []
 
-func setup(context_builder: RefCounted, skills: RefCounted) -> void:
+func setup(context_builder: RefCounted, skills: RefCounted, index_svc: RefCounted = null) -> void:
 	project_context = context_builder
 	skills_manager = skills
+	project_index = index_svc
 	rebuild_index()
 
 func rebuild_index() -> void:
 	_file_index.clear()
 	_folder_index.clear()
-	_scan_directory("res://")
+	if project_index != null and project_index.has_method("is_ready") and project_index.is_ready():
+		for entry in project_index.get_file_paths_for_autocomplete():
+			if entry is Dictionary:
+				_file_index.append(entry)
+		_scan_directories_only("res://")
+	else:
+		_scan_directory("res://")
 
 func search(query: String, locale_manager: RefCounted = null, limit: int = 24) -> Array:
 	var normalized: String = query.to_lower().strip_edges()
@@ -269,6 +277,27 @@ func _collect_folder_listing_recursive(root: String, path: String, lines: Packed
 					_collect_folder_listing_recursive(root, full_path, lines, max_items)
 			else:
 				lines.append(full_path.replace("res://", ""))
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+func _scan_directories_only(path: String) -> void:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry: String = dir.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var full_path: String = path.path_join(entry)
+			if dir.current_is_dir():
+				if not entry.begins_with("."):
+					_folder_index.append({
+						"kind": "folder",
+						"path": full_path,
+						"label": full_path.replace("res://", "") + "/",
+						"insert": "@%s/" % full_path
+					})
+					_scan_directories_only(full_path)
 		entry = dir.get_next()
 	dir.list_dir_end()
 

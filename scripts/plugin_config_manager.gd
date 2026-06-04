@@ -143,7 +143,27 @@ func create_default_config() -> void:
 			"active_model": "llama3.2",
 			"skills_path": "res://addons/ai_assistant_plugin/skills",
 			"harness_base_context_path": "res://addons/ai_assistant_plugin/harness/base_context.md",
-			"harness_thinking_path": "res://addons/ai_assistant_plugin/harness/thinking_instructions.md"
+			"harness_thinking_path": "res://addons/ai_assistant_plugin/harness/thinking_instructions.md",
+			"enable_project_index": true,
+			"index_on_startup": true,
+			"index_auto_sync": true,
+			"index_max_age_hours": 24,
+			"enable_semantic_index": true,
+			"semantic_index_on_sync": true,
+			"embedding_provider": "ollama",
+			"embedding_model": "nomic-embed-text",
+			"embedding_endpoint": "",
+			"semantic_max_chunks": 400,
+			"semantic_chunk_size": 1200,
+			"semantic_min_score": 0.32,
+			"enable_docs_index": true,
+			"docs_include_project_md": true,
+			"docs_include_godot_classes": true,
+			"docs_include_global_classes": true,
+			"docs_max_entries": 600,
+			"docs_godot_class_limit": 350,
+			"docs_max_md_chars": 8000,
+			"docs_md_chunk_size": 1400
 		}
 	}
 	save_config()
@@ -248,6 +268,46 @@ func _migrate_legacy_config() -> void:
 		settings["harness_base_context_path"] = "res://addons/ai_assistant_plugin/harness/base_context.md"
 	if not settings.has("harness_thinking_path"):
 		settings["harness_thinking_path"] = "res://addons/ai_assistant_plugin/harness/thinking_instructions.md"
+	if not settings.has("enable_project_index"):
+		settings["enable_project_index"] = true
+	if not settings.has("index_on_startup"):
+		settings["index_on_startup"] = true
+	if not settings.has("index_auto_sync"):
+		settings["index_auto_sync"] = true
+	if not settings.has("index_max_age_hours"):
+		settings["index_max_age_hours"] = 24
+	if not settings.has("enable_semantic_index"):
+		settings["enable_semantic_index"] = true
+	if not settings.has("semantic_index_on_sync"):
+		settings["semantic_index_on_sync"] = true
+	if not settings.has("embedding_provider"):
+		settings["embedding_provider"] = "ollama"
+	if not settings.has("embedding_model"):
+		settings["embedding_model"] = "nomic-embed-text"
+	if not settings.has("embedding_endpoint"):
+		settings["embedding_endpoint"] = ""
+	if not settings.has("semantic_max_chunks"):
+		settings["semantic_max_chunks"] = 400
+	if not settings.has("semantic_chunk_size"):
+		settings["semantic_chunk_size"] = 1200
+	if not settings.has("semantic_min_score"):
+		settings["semantic_min_score"] = 0.32
+	if not settings.has("enable_docs_index"):
+		settings["enable_docs_index"] = true
+	if not settings.has("docs_include_project_md"):
+		settings["docs_include_project_md"] = true
+	if not settings.has("docs_include_godot_classes"):
+		settings["docs_include_godot_classes"] = true
+	if not settings.has("docs_include_global_classes"):
+		settings["docs_include_global_classes"] = true
+	if not settings.has("docs_max_entries"):
+		settings["docs_max_entries"] = 600
+	if not settings.has("docs_godot_class_limit"):
+		settings["docs_godot_class_limit"] = 350
+	if not settings.has("docs_max_md_chars"):
+		settings["docs_max_md_chars"] = 8000
+	if not settings.has("docs_md_chunk_size"):
+		settings["docs_md_chunk_size"] = 1400
 	if not settings.has("ui_language"):
 		settings["ui_language"] = "auto"
 
