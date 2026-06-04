@@ -40,25 +40,38 @@ theme_override_constants/separation = 4
 
 [node name="ConversationHeader" type="HBoxContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox"]
 layout_mode = 2
+theme_override_constants/separation = 4
 
 [node name="ConversationTitle" type="Label" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "Conversation"
+clip_text = true
 
-[node name="HistoryDropdown" type="OptionButton" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
-custom_minimum_size = Vector2(140, 28)
+[node name="HeaderActions" type="HBoxContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
 layout_mode = 2
+theme_override_constants/separation = 2
 
-[node name="NewChatButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
-layout_mode = 2
-flat = true
-text = "New"
-
-[node name="ClearButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
+[node name="NewAgentButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions"]
+custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
 flat = true
-text = "Clear"
+tooltip_text = "New Agent (Ctrl+N)"
+text = "+"
+
+[node name="HistoryButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions"]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+flat = true
+tooltip_text = "Agent history"
+text = "◷"
+
+[node name="MoreButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions"]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+flat = true
+tooltip_text = "More options"
+text = "⋯"
 
 [node name="ConversationScroll" type="ScrollContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox"]
 layout_mode = 2
@@ -81,22 +94,27 @@ size_flags_stretch_ratio = 0.45
 layout_mode = 2
 theme_override_constants/separation = 6
 
+[node name="AutocompletePanel" type="PanelContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
+visible = false
+layout_mode = 2
+
+[node name="AutocompleteScroll" type="ScrollContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel"]
+custom_minimum_size = Vector2(0, 160)
+layout_mode = 2
+size_flags_horizontal = 3
+horizontal_scroll_mode = 0
+
+[node name="SuggestionsVBox" type="VBoxContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel/AutocompleteScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
 [node name="PromptTextEdit" type="TextEdit" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2
 size_flags_vertical = 3
 placeholder_text = "Escribe tu mensaje…  /help  ·  @archivo  ·  Enter envía"
 wrap_mode = 1
-
-[node name="MentionPopup" type="PopupPanel" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
-size = Vector2i(360, 220)
-
-[node name="MentionList" type="ItemList" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/MentionPopup"]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
 
 [node name="BottomToolbar" type="HBoxContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
 layout_mode = 2
@@ -172,3 +190,50 @@ text = "Harness: base · thinking · context · tools"
 [node name="ShortcutHint" type="Label" parent="RootVBox/StatusBar/StatusHBox"]
 layout_mode = 2
 text = "Enter · @ refs · / cmds"
+
+[node name="HistoryPopup" type="PopupPanel" parent="."]
+size = Vector2i(320, 380)
+
+[node name="HistoryMargin" type="MarginContainer" parent="HistoryPopup"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="HistoryVBox" type="VBoxContainer" parent="HistoryPopup/HistoryMargin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="HistorySearch" type="LineEdit" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
+custom_minimum_size = Vector2(0, 30)
+layout_mode = 2
+placeholder_text = "Search Agents..."
+
+[node name="HistoryScroll" type="ScrollContainer" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
+custom_minimum_size = Vector2(0, 260)
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="HistoryListVBox" type="VBoxContainer" parent="HistoryPopup/HistoryMargin/HistoryVBox/HistoryScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
+[node name="ArchivedToggle" type="Button" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
+layout_mode = 2
+flat = true
+alignment = 0
+text = "> Archived"
+
+[node name="ArchivedSection" type="VBoxContainer" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="MoreMenu" type="PopupMenu" parent="."]

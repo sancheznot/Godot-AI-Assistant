@@ -18,11 +18,13 @@ func rebuild_index() -> void:
 	_file_index.clear()
 	_scan_directory("res://")
 
-func search(query: String, limit: int = 24) -> Array:
+func search(query: String, locale_manager: RefCounted = null, limit: int = 24) -> Array:
 	var normalized: String = query.to_lower().strip_edges()
 	var results: Array = []
-	if normalized.is_empty():
-		results.append_array(_special_mentions())
+	if normalized.is_empty() or normalized in ["sc", "scen", "scene", "escena"]:
+		results.append_array(_context_mentions(locale_manager))
+	if skills_manager and (normalized.is_empty() or normalized.begins_with("skill") or normalized.begins_with("sk")):
+		results.append_array(_skill_mentions(normalized))
 	for entry in _file_index:
 		if results.size() >= limit:
 			break
@@ -30,8 +32,70 @@ func search(query: String, limit: int = 24) -> Array:
 			var path: String = String(entry.get("path", ""))
 			var label: String = String(entry.get("label", path))
 			if normalized.is_empty() or normalized in path.to_lower() or normalized in label.to_lower():
-				results.append(entry.duplicate())
+				results.append(_file_entry(entry, locale_manager))
+	return _sort_and_limit(results, limit)
+
+func _context_mentions(locale_manager: RefCounted) -> Array:
+	var desc_scene: String = _L(locale_manager, "ac.mention.scene", "Current open scene")
+	var desc_selection: String = _L(locale_manager, "ac.mention.selection", "Selected nodes in editor")
+	return [
+		{"category": "context", "insert": "@scene", "title": "@scene", "description": desc_scene, "kind": "mention"},
+		{"category": "context", "insert": "@selection", "title": "@selection", "description": desc_selection, "kind": "mention"},
+	]
+
+func _skill_mentions(normalized: String) -> Array:
+	var results: Array = []
+	for skill_id in skills_manager.get_skill_ids():
+		var skill_filter: String = normalized.replace("skill", "").strip_edges()
+		if not normalized.is_empty() and not skill_filter.is_empty() and not skill_id.to_lower().contains(skill_filter):
+			continue
+		results.append({
+			"category": "skills",
+			"insert": "@skill:%s" % skill_id,
+			"title": "@skill:%s" % skill_id,
+			"description": skills_manager.get_skill_label(skill_id),
+			"kind": "mention"
+		})
+	return results
+
+func _file_entry(entry: Dictionary, locale_manager: RefCounted) -> Dictionary:
+	var path: String = String(entry.get("path", ""))
+	var category: String = "files"
+	var desc: String = _L(locale_manager, "ac.mention.file", "Attach file content")
+	if path.ends_with(".tscn"):
+		category = "scenes"
+		desc = _L(locale_manager, "ac.mention.scene_file", "Scene file reference")
+	elif path.ends_with(".gd") or path.ends_with(".cs"):
+		category = "scripts"
+		desc = _L(locale_manager, "ac.mention.script_file", "Script file reference")
+	elif path.ends_with(".md"):
+		desc = _L(locale_manager, "ac.mention.doc_file", "Documentation reference")
+	return {
+		"category": category,
+		"insert": String(entry.get("insert", "@%s" % path)),
+		"title": String(entry.get("label", path.replace("res://", ""))),
+		"description": desc,
+		"kind": "mention",
+		"path": path
+	}
+
+func _sort_and_limit(results: Array, limit: int) -> Array:
+	var order: Dictionary = {"context": 0, "skills": 1, "scenes": 2, "scripts": 3, "files": 4}
+	results.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var ca: int = int(order.get(String(a.get("category", "files")), 9))
+		var cb: int = int(order.get(String(b.get("category", "files")), 9))
+		if ca == cb:
+			return String(a.get("title", "")) < String(b.get("title", ""))
+		return ca < cb
+	)
 	return results.slice(0, limit)
+
+func _L(locale_manager: RefCounted, key: String, fallback: String) -> String:
+	if locale_manager and locale_manager.has_method("get_text"):
+		var text: String = locale_manager.get_text(key)
+		if text != key:
+			return text
+	return fallback
 
 func insert_mention(current_text: String, caret_line: int, caret_col: int, mention_value: String) -> Dictionary:
 	var lines: PackedStringArray = current_text.split("\n", false)
@@ -136,20 +200,6 @@ func _resolve_file(path: String) -> String:
 	if path.ends_with(".tscn"):
 		return "## Attached scene: %s\nUse editor tools to inspect nodes. Path: %s" % [path, path]
 	return "## Attached file: %s\n%s" % [path, text.substr(0, MAX_ATTACHMENT_CHARS)]
-
-func _special_mentions() -> Array:
-	var specials: Array = [
-		{"kind": "special", "label": "@scene — escena actual", "insert": "@scene"},
-		{"kind": "special", "label": "@selection — nodos seleccionados", "insert": "@selection"},
-	]
-	if skills_manager:
-		for skill_id in skills_manager.get_skill_ids():
-			specials.append({
-				"kind": "skill",
-				"label": "@skill:%s — %s" % [skill_id, skills_manager.get_skill_label(skill_id)],
-				"insert": "@skill:%s" % skill_id
-			})
-	return specials
 
 func _scan_directory(path: String) -> void:
 	var dir := DirAccess.open(path)

@@ -18,11 +18,17 @@ const COLOR_BODY_TEXT := Color(0.9, 0.91, 0.94, 1.0)
 @onready var refresh_models_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/RefreshModelsButton
 @onready var send_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/SendButton
 @onready var config_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ConfigButton
-@onready var clear_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/ClearButton
-@onready var new_chat_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/NewChatButton
-@onready var history_dropdown: OptionButton = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HistoryDropdown
-@onready var mention_popup: PopupPanel = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/MentionPopup
-@onready var mention_list: ItemList = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/MentionPopup/MentionList
+@onready var new_agent_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/NewAgentButton
+@onready var history_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/HistoryButton
+@onready var more_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/MoreButton
+@onready var history_popup: PopupPanel = $HistoryPopup
+@onready var history_search: LineEdit = $HistoryPopup/HistoryMargin/HistoryVBox/HistorySearch
+@onready var history_list_vbox: VBoxContainer = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryScroll/HistoryListVBox
+@onready var archived_toggle: Button = $HistoryPopup/HistoryMargin/HistoryVBox/ArchivedToggle
+@onready var archived_section: VBoxContainer = $HistoryPopup/HistoryMargin/HistoryVBox/ArchivedSection
+@onready var more_menu: PopupMenu = $MoreMenu
+@onready var autocomplete_panel: PanelContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel
+@onready var suggestions_vbox: VBoxContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel/AutocompleteScroll/SuggestionsVBox
 @onready var skills_dropdown: OptionButton = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/SkillsDropdown
 @onready var context_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ContextCheckBox
 @onready var tools_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolsCheckBox
@@ -46,6 +52,7 @@ var config_dialog: Window = null
 var chat_history: RefCounted = null
 var mention_resolver: RefCounted = null
 var composer_commands: RefCounted = null
+var composer_autocomplete: RefCounted = null
 var locale_manager: RefCounted = null
 
 var _active_assistant_panel: PanelContainer = null
@@ -55,7 +62,13 @@ var _active_step_label: Label = null
 var _active_summary_label: Label = null
 var _active_progress_bar: ProgressBar = null
 var _active_status_title: Label = null
-var _mention_items: Array = []
+var _autocomplete_trigger: Dictionary = {}
+var _autocomplete_items: Array = []
+var _autocomplete_buttons: Array = []
+var _autocomplete_selected: int = 0
+var _history_session_menu: PopupMenu = null
+var _history_menu_session_id: String = ""
+var _history_archived_open: bool = false
 
 func setup(
 	plugin: EditorPlugin,
@@ -103,6 +116,7 @@ func _ready() -> void:
 	model_catalog.refresh_finished.connect(_on_model_refresh_finished)
 	
 	composer_commands = preload("res://addons/ai_assistant_plugin/scripts/composer_commands.gd").new()
+	composer_autocomplete = preload("res://addons/ai_assistant_plugin/scripts/composer_autocomplete.gd").new()
 	if locale_manager == null:
 		locale_manager = preload("res://addons/ai_assistant_plugin/scripts/locale_manager.gd").new()
 		locale_manager.setup(config_manager)
@@ -121,7 +135,8 @@ func _ready() -> void:
 	initialize_ui()
 	_apply_locale()
 	_restore_chat_from_history()
-	_refresh_history_dropdown()
+	_refresh_history_ui()
+	_setup_history_ui()
 
 func _apply_composer_styles() -> void:
 	var panel_style := StyleBoxFlat.new()
@@ -158,13 +173,14 @@ func _apply_composer_styles() -> void:
 	
 	_style_toolbar_button(config_button, false)
 	_style_toolbar_button(send_button, true)
-	_style_toolbar_button(clear_button, false)
 	_style_toolbar_button(refresh_models_button, false)
+	_style_header_icon_button(new_agent_button)
+	_style_header_icon_button(history_button)
+	_style_header_icon_button(more_button)
 	_style_toolbar_option(model_dropdown)
 	_style_toolbar_option(skills_dropdown)
-	_style_toolbar_option(history_dropdown)
-	mention_list.fixed_icon_size = Vector2i(0, 0)
-	mention_list.add_theme_font_size_override("font_size", 12)
+	autocomplete_panel.visible = false
+	_update_history_popup_styles()
 
 func _tr(key: String, args: Array = []) -> String:
 	if locale_manager:
@@ -174,9 +190,11 @@ func _tr(key: String, args: Array = []) -> String:
 func _apply_locale() -> void:
 	if locale_manager == null:
 		return
-	conversation_title.text = _tr("ui.conversation")
-	new_chat_button.text = _tr("ui.new_chat")
-	clear_button.text = _tr("ui.clear")
+	new_agent_button.tooltip_text = _tr("ui.new_agent_tooltip")
+	history_button.tooltip_text = _tr("ui.history_tooltip")
+	more_button.tooltip_text = _tr("ui.more_tooltip")
+	history_search.placeholder_text = _tr("ui.history_search_placeholder")
+	archived_toggle.text = _tr("ui.history_archived_closed")
 	context_checkbox.text = _tr("ui.context")
 	tools_checkbox.text = _tr("ui.tools")
 	agent_checkbox.text = _tr("ui.agent")
@@ -428,70 +446,419 @@ func _restore_chat_from_history() -> void:
 				_append_assistant_message_static(content, bool(message.get("is_error", false)))
 	_scroll_to_bottom()
 
-func _refresh_history_dropdown() -> void:
+func _refresh_history_ui() -> void:
 	if chat_history == null:
 		return
-	history_dropdown.clear()
-	var summaries: Array = chat_history.get_session_summaries()
+	var title: String = chat_history.get_active_session_title()
+	conversation_title.text = title
+	conversation_title.tooltip_text = title
+	if history_popup.visible:
+		_render_history_panel()
+	prompt_text_edit.placeholder_text = _tr("ui.composer_placeholder")
+	_update_autocomplete_styles()
+
+func _setup_history_ui() -> void:
+	_history_session_menu = PopupMenu.new()
+	_history_session_menu.add_item(_tr("ui.history_menu_clear"), 0)
+	_history_session_menu.add_item(_tr("ui.history_menu_delete"), 1)
+	add_child(_history_session_menu)
+	_history_session_menu.id_pressed.connect(_on_history_session_menu_id)
+	
+	more_menu.clear()
+	more_menu.add_item(_tr("ui.clear"), 0)
+	more_menu.add_item(_tr("ui.config"), 1)
+	more_menu.id_pressed.connect(_on_more_menu_id)
+	
+	var shortcut := Shortcut.new()
+	var key_event := InputEventKey.new()
+	key_event.keycode = KEY_N
+	key_event.ctrl_pressed = true
+	shortcut.events.append(key_event)
+	new_agent_button.shortcut = shortcut
+	
+	history_search.text_changed.connect(_on_history_search_changed)
+	archived_toggle.pressed.connect(_on_archived_toggle_pressed)
+	history_popup.popup_hide.connect(_on_history_popup_hide)
+
+func _update_history_popup_styles() -> void:
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.11, 0.11, 0.12, 1.0)
+	panel_style.border_color = Color(0.28, 0.28, 0.32, 1.0)
+	panel_style.set_border_width_all(1)
+	panel_style.set_corner_radius_all(10)
+	panel_style.content_margin_left = 0
+	panel_style.content_margin_right = 0
+	panel_style.content_margin_top = 0
+	panel_style.content_margin_bottom = 0
+	history_popup.add_theme_stylebox_override("panel", panel_style)
+	
+	var search_style := StyleBoxFlat.new()
+	search_style.bg_color = Color(0.08, 0.08, 0.09, 1.0)
+	search_style.border_color = Color(0.22, 0.22, 0.26, 1.0)
+	search_style.set_border_width_all(1)
+	search_style.set_corner_radius_all(8)
+	search_style.content_margin_left = 10
+	search_style.content_margin_right = 10
+	search_style.content_margin_top = 6
+	search_style.content_margin_bottom = 6
+	history_search.add_theme_stylebox_override("normal", search_style)
+	history_search.add_theme_font_size_override("font_size", 12)
+
+func _style_header_icon_button(button: Button) -> void:
+	button.flat = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.add_theme_font_size_override("font_size", 15)
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = Color(0, 0, 0, 0)
+	normal.set_corner_radius_all(6)
+	normal.content_margin_left = 6
+	normal.content_margin_right = 6
+	normal.content_margin_top = 4
+	normal.content_margin_bottom = 4
+	var hover := normal.duplicate()
+	hover.bg_color = Color(0.2, 0.2, 0.24, 1.0)
+	button.add_theme_color_override("font_color", Color(0.78, 0.8, 0.86, 1.0))
+	button.add_theme_color_override("font_hover_color", Color(0.95, 0.96, 0.98, 1.0))
+	button.add_theme_stylebox_override("normal", normal)
+	button.add_theme_stylebox_override("hover", hover)
+	button.add_theme_stylebox_override("pressed", hover)
+	button.add_theme_stylebox_override("focus", normal)
+
+func _toggle_history_popup() -> void:
+	if history_popup.visible:
+		history_popup.hide()
+		return
+	_render_history_panel()
+	var anchor_pos: Vector2 = history_button.global_position
+	var popup_width: int = 320
+	var popup_height: int = 380
+	history_popup.size = Vector2i(popup_width, popup_height)
+	history_popup.position = Vector2i(
+		int(anchor_pos.x + history_button.size.x - popup_width),
+		int(anchor_pos.y + history_button.size.y + 4)
+	)
+	history_popup.popup()
+
+func _render_history_panel() -> void:
+	for child in history_list_vbox.get_children():
+		child.queue_free()
+	for child in archived_section.get_children():
+		child.queue_free()
+	if chat_history == null:
+		return
+	var filter_text: String = history_search.text
+	var summaries: Array = chat_history.get_session_summaries(filter_text, false)
+	var now_ts: int = Time.get_unix_time_from_system()
+	var today_items: Array = []
+	var older_items: Array = []
 	for summary in summaries:
 		if summary is Dictionary:
-			var title: String = String(summary.get("title", "Chat"))
-			var count: int = int(summary.get("message_count", 0))
-			history_dropdown.add_item("%s (%d)" % [title, count])
-			history_dropdown.set_item_metadata(history_dropdown.item_count - 1, String(summary.get("id", "")))
-	for index in history_dropdown.item_count:
-		if String(history_dropdown.get_item_metadata(index)) == chat_history.active_session_id:
-			history_dropdown.select(index)
-			break
-
-func _setup_mention_popup(query: String) -> void:
-	if mention_resolver == null:
-		return
-	_mention_items = mention_resolver.search(query, 20)
-	mention_list.clear()
-	for entry in _mention_items:
-		if entry is Dictionary:
-			mention_list.add_item(String(entry.get("label", entry.get("insert", "item"))))
-	if _mention_items.is_empty():
-		mention_popup.hide()
-		return
-	mention_list.select(0)
-	var panel_pos: Vector2 = prompt_text_edit.global_position
-	mention_popup.size = Vector2i(mini(prompt_text_edit.size.x, 420), 220)
-	mention_popup.position = Vector2i(int(panel_pos.x), int(panel_pos.y - mention_popup.size.y - 4))
-	mention_popup.popup()
-
-func _on_prompt_text_changed() -> void:
-	var caret: Vector2i = prompt_text_edit.get_caret_line_column()
-	var mention_state: Dictionary = mention_resolver.get_active_mention_query(
-		prompt_text_edit.text,
-		caret.y,
-		caret.x
-	)
-	if bool(mention_state.get("active", false)):
-		_setup_mention_popup(String(mention_state.get("query", "")))
+			if _is_same_day(int(summary.get("updated_at", 0)), now_ts):
+				today_items.append(summary)
+			else:
+				older_items.append(summary)
+	if today_items.is_empty() and older_items.is_empty():
+		_add_history_empty_label(history_list_vbox, _tr("ui.history_empty"))
 	else:
-		mention_popup.hide()
+		if not today_items.is_empty():
+			_add_history_section_header(history_list_vbox, _tr("ui.history_today"))
+			for summary in today_items:
+				history_list_vbox.add_child(_make_history_row(summary))
+		if not older_items.is_empty():
+			_add_history_section_header(history_list_vbox, _tr("ui.history_older"))
+			for summary in older_items:
+				history_list_vbox.add_child(_make_history_row(summary))
+	var archived_items: Array = chat_history.get_archived_summaries(filter_text)
+	archived_section.visible = _history_archived_open
+	archived_toggle.text = _tr("ui.history_archived_open") if _history_archived_open else _tr("ui.history_archived_closed")
+	if _history_archived_open:
+		if archived_items.is_empty():
+			_add_history_empty_label(archived_section, _tr("ui.history_archived_empty"))
+		else:
+			for summary in archived_items:
+				archived_section.add_child(_make_history_row(summary))
 
-func _on_mention_selected(index: int) -> void:
-	if index < 0 or index >= _mention_items.size():
+func _add_history_section_header(parent: VBoxContainer, text: String) -> void:
+	var header := Label.new()
+	header.text = text
+	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_color_override("font_color", Color(0.5, 0.56, 0.66, 1.0))
+	parent.add_child(header)
+
+func _add_history_empty_label(parent: VBoxContainer, text: String) -> void:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", Color(0.55, 0.58, 0.64, 1.0))
+	parent.add_child(label)
+
+func _make_history_row(summary: Dictionary) -> PanelContainer:
+	var session_id: String = String(summary.get("id", ""))
+	var is_active: bool = chat_history.active_session_id == session_id
+	var is_pinned: bool = bool(summary.get("pinned", false))
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var row_style := StyleBoxFlat.new()
+	row_style.set_corner_radius_all(8)
+	row_style.content_margin_left = 8
+	row_style.content_margin_right = 6
+	row_style.content_margin_top = 6
+	row_style.content_margin_bottom = 6
+	if is_active:
+		row_style.bg_color = Color(0.18, 0.24, 0.36, 1.0)
+		row_style.border_color = Color(0.32, 0.42, 0.58, 1.0)
+		row_style.set_border_width_all(1)
+	else:
+		row_style.bg_color = Color(0.13, 0.13, 0.15, 1.0)
+	panel.add_theme_stylebox_override("panel", row_style)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	panel.add_child(row)
+	var active_icon := Label.new()
+	active_icon.custom_minimum_size = Vector2(16, 0)
+	active_icon.text = "✓" if is_active else ""
+	active_icon.add_theme_font_size_override("font_size", 12)
+	active_icon.add_theme_color_override("font_color", Color(0.55, 0.75, 1.0, 1.0))
+	row.add_child(active_icon)
+	var title_button := Button.new()
+	title_button.flat = true
+	title_button.focus_mode = Control.FOCUS_NONE
+	title_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	title_button.text = _truncate_history_title(String(summary.get("title", "Chat")))
+	title_button.add_theme_font_size_override("font_size", 12)
+	title_button.add_theme_color_override("font_color", Color(0.92, 0.93, 0.96, 1.0))
+	title_button.pressed.connect(_activate_session.bind(session_id))
+	row.add_child(title_button)
+	var menu_button := _make_history_action_button("⋯", _tr("ui.history_row_menu"))
+	menu_button.pressed.connect(_open_history_session_menu.bind(session_id, menu_button))
+	row.add_child(menu_button)
+	var pin_button := _make_history_action_button("📌" if is_pinned else "⌁", _tr("ui.history_row_pin"))
+	pin_button.pressed.connect(_toggle_session_pin.bind(session_id, not is_pinned))
+	row.add_child(pin_button)
+	var archive_button := _make_history_action_button("⊡", _tr("ui.history_row_archive"))
+	archive_button.pressed.connect(_toggle_session_archive.bind(session_id, not bool(summary.get("archived", false))))
+	row.add_child(archive_button)
+	return panel
+
+func _make_history_action_button(label_text: String, tooltip: String) -> Button:
+	var button := Button.new()
+	button.flat = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.custom_minimum_size = Vector2(24, 24)
+	button.text = label_text
+	button.tooltip_text = tooltip
+	button.add_theme_font_size_override("font_size", 11)
+	button.add_theme_color_override("font_color", Color(0.65, 0.68, 0.74, 1.0))
+	return button
+
+func _truncate_history_title(title: String) -> String:
+	if title.length() <= 34:
+		return title
+	return title.substr(0, 31) + "..."
+
+func _is_same_day(timestamp: int, reference_timestamp: int) -> bool:
+	var a: Dictionary = Time.get_datetime_dict_from_unix_time(timestamp)
+	var b: Dictionary = Time.get_datetime_dict_from_unix_time(reference_timestamp)
+	return int(a.get("year", 0)) == int(b.get("year", 0)) \
+		and int(a.get("month", 0)) == int(b.get("month", 0)) \
+		and int(a.get("day", 0)) == int(b.get("day", 0))
+
+func _activate_session(session_id: String) -> void:
+	if chat_history.set_active_session(session_id):
+		_restore_chat_from_history()
+		_refresh_history_ui()
+		status_label.text = _tr("ui.status_chat_loaded")
+		history_popup.hide()
+
+func _toggle_session_pin(session_id: String, pinned: bool) -> void:
+	if chat_history.pin_session(session_id, pinned):
+		_render_history_panel()
+
+func _toggle_session_archive(session_id: String, archived: bool) -> void:
+	if chat_history.archive_session(session_id, archived):
+		if chat_history.active_session_id != session_id:
+			_restore_chat_from_history()
+		_refresh_history_ui()
+
+func _open_history_session_menu(session_id: String, anchor: Control) -> void:
+	_history_menu_session_id = session_id
+	var menu_pos: Vector2 = anchor.global_position
+	_history_session_menu.position = Vector2i(int(menu_pos.x), int(menu_pos.y + anchor.size.y))
+	_history_session_menu.popup()
+
+func _on_history_session_menu_id(menu_id: int) -> void:
+	if _history_menu_session_id.is_empty():
 		return
-	var entry: Dictionary = _mention_items[index]
-	var insert_text: String = String(entry.get("insert", ""))
-	var caret: Vector2i = prompt_text_edit.get_caret_line_column()
-	var result: Dictionary = mention_resolver.insert_mention(
+	match menu_id:
+		0:
+			if chat_history.clear_session_messages(_history_menu_session_id):
+				if chat_history.active_session_id == _history_menu_session_id:
+					_clear_conversation()
+					status_label.text = _tr("ui.status_chat_cleared")
+		1:
+			if chat_history.delete_session(_history_menu_session_id):
+				_restore_chat_from_history()
+				status_label.text = _tr("ui.status_chat_deleted")
+	_refresh_history_ui()
+
+func _on_history_search_changed(_new_text: String) -> void:
+	if history_popup.visible:
+		_render_history_panel()
+
+func _on_archived_toggle_pressed() -> void:
+	_history_archived_open = not _history_archived_open
+	_render_history_panel()
+
+func _on_history_popup_hide() -> void:
+	_history_archived_open = false
+	archived_section.visible = false
+	archived_toggle.text = _tr("ui.history_archived_closed")
+
+func _on_new_agent_pressed() -> void:
+	var replace: bool = Input.is_key_pressed(KEY_ALT)
+	if replace:
+		chat_history.replace_active_session(_tr("ui.new_chat_session"))
+	else:
+		chat_history.create_session(_tr("ui.new_chat_session"))
+	_clear_conversation()
+	prompt_text_edit.clear()
+	_hide_autocomplete()
+	_refresh_history_ui()
+	status_label.text = _tr("ui.status_agent_replaced") if replace else _tr("ui.status_new_chat")
+	history_popup.hide()
+
+func _on_more_menu_id(menu_id: int) -> void:
+	match menu_id:
+		0:
+			_on_clear_current_chat()
+		1:
+			config_dialog.open_dialog()
+
+func _on_clear_current_chat() -> void:
+	chat_history.clear_active_session()
+	_clear_conversation()
+	_refresh_history_ui()
+	status_label.text = _tr("ui.status_chat_cleared")
+
+func _update_autocomplete_styles() -> void:
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.11, 0.11, 0.12, 1.0)
+	panel_style.border_color = Color(0.32, 0.42, 0.58, 1.0)
+	panel_style.set_border_width_all(1)
+	panel_style.set_corner_radius_all(8)
+	panel_style.content_margin_left = 6
+	panel_style.content_margin_right = 6
+	panel_style.content_margin_top = 6
+	panel_style.content_margin_bottom = 6
+	autocomplete_panel.add_theme_stylebox_override("panel", panel_style)
+
+func _category_label(category: String) -> String:
+	var key: String = "ac.cat.%s" % category
+	var text: String = _tr(key)
+	return text if text != key else category.capitalize()
+
+func _hide_autocomplete() -> void:
+	autocomplete_panel.visible = false
+	_autocomplete_items.clear()
+	_autocomplete_buttons.clear()
+	_autocomplete_trigger = {}
+	_autocomplete_selected = 0
+
+func _update_autocomplete() -> void:
+	if composer_autocomplete == null:
+		return
+	var caret_line: int = prompt_text_edit.get_caret_line()
+	var caret_col: int = prompt_text_edit.get_caret_column()
+	_autocomplete_trigger = composer_autocomplete.detect_trigger(prompt_text_edit.text, caret_line, caret_col)
+	if not bool(_autocomplete_trigger.get("active", false)):
+		_hide_autocomplete()
+		return
+	var query: String = String(_autocomplete_trigger.get("query", ""))
+	var mode: String = String(_autocomplete_trigger.get("mode", ""))
+	if mode == "mention" and mention_resolver:
+		_autocomplete_items = mention_resolver.search(query, locale_manager, 24)
+	elif mode == "command":
+		_autocomplete_items = composer_autocomplete.get_slash_suggestions(query, locale_manager, skills_manager)
+	else:
+		_autocomplete_items = []
+	_render_autocomplete_items()
+
+func _render_autocomplete_items() -> void:
+	for child in suggestions_vbox.get_children():
+		child.queue_free()
+	_autocomplete_buttons.clear()
+	if _autocomplete_items.is_empty():
+		autocomplete_panel.visible = false
+		return
+	var last_category: String = ""
+	for item_index in _autocomplete_items.size():
+		var item: Dictionary = _autocomplete_items[item_index]
+		if item is Dictionary:
+			var category: String = String(item.get("category", ""))
+			if category != last_category:
+				var header := Label.new()
+				header.text = _category_label(category)
+				header.add_theme_font_size_override("font_size", 11)
+				header.add_theme_color_override("font_color", Color(0.5, 0.56, 0.66, 1.0))
+				suggestions_vbox.add_child(header)
+				last_category = category
+			var row := Button.new()
+			row.flat = true
+			row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			row.focus_mode = Control.FOCUS_NONE
+			row.text = "%s   %s" % [String(item.get("title", item.get("insert", ""))), String(item.get("description", ""))]
+			row.add_theme_font_size_override("font_size", 12)
+			row.pressed.connect(_apply_autocomplete_selection.bind(item_index))
+			suggestions_vbox.add_child(row)
+			_autocomplete_buttons.append(row)
+	var hint := Label.new()
+	hint.text = _tr("ac.hint")
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.add_theme_color_override("font_color", Color(0.45, 0.48, 0.55, 1.0))
+	suggestions_vbox.add_child(hint)
+	_autocomplete_selected = 0
+	_highlight_autocomplete_selection()
+	autocomplete_panel.visible = true
+
+func _highlight_autocomplete_selection() -> void:
+	for index in _autocomplete_buttons.size():
+		var button: Button = _autocomplete_buttons[index]
+		var normal := StyleBoxFlat.new()
+		normal.set_corner_radius_all(4)
+		normal.content_margin_left = 8
+		normal.content_margin_right = 8
+		normal.content_margin_top = 3
+		normal.content_margin_bottom = 3
+		if index == _autocomplete_selected:
+			normal.bg_color = Color(0.2, 0.28, 0.42, 1.0)
+			button.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98, 1.0))
+		else:
+			normal.bg_color = Color(0, 0, 0, 0)
+			button.add_theme_color_override("font_color", Color(0.82, 0.84, 0.88, 1.0))
+		button.add_theme_stylebox_override("normal", normal)
+		button.add_theme_stylebox_override("hover", normal)
+		button.add_theme_stylebox_override("pressed", normal)
+
+func _apply_autocomplete_selection(item_index: int = -1) -> void:
+	var selected: int = item_index if item_index >= 0 else _autocomplete_selected
+	if selected < 0 or selected >= _autocomplete_items.size():
+		return
+	var item: Dictionary = _autocomplete_items[selected]
+	var insert_text: String = String(item.get("insert", ""))
+	var result: Dictionary = composer_autocomplete.insert_selection(
 		prompt_text_edit.text,
-		caret.y,
-		caret.x,
+		_autocomplete_trigger,
 		insert_text
 	)
 	prompt_text_edit.text = String(result.get("text", prompt_text_edit.text))
-	prompt_text_edit.set_caret_line_column(
-		int(result.get("caret_line", caret.y)),
-		int(result.get("caret_col", caret.x))
-	)
-	mention_popup.hide()
+	prompt_text_edit.set_caret_line(int(result.get("caret_line", 0)))
+	prompt_text_edit.set_caret_column(int(result.get("caret_col", 0)))
+	_hide_autocomplete()
 	prompt_text_edit.grab_focus()
+
+func _on_prompt_text_changed() -> void:
+	_update_autocomplete()
 
 func _handle_slash_command(prompt: String) -> bool:
 	var parsed: Dictionary = composer_commands.try_parse(prompt)
@@ -509,7 +876,7 @@ func _handle_slash_command(prompt: String) -> bool:
 		"new":
 			chat_history.create_session(_tr("ui.new_chat_session"))
 			clear_inputs()
-			_refresh_history_dropdown()
+			_refresh_history_ui()
 			status_label.text = _tr("ui.status_new_chat")
 		"history":
 			var lines: PackedStringArray = [_tr("ui.saved_chats")]
@@ -627,9 +994,9 @@ func initialize_ui() -> void:
 	
 	send_button.pressed.connect(_on_send_button_pressed)
 	config_button.pressed.connect(_on_config_button_pressed)
-	clear_button.pressed.connect(_on_clear_button_pressed)
-	new_chat_button.pressed.connect(_on_new_chat_pressed)
-	history_dropdown.item_selected.connect(_on_history_selected)
+	new_agent_button.pressed.connect(_on_new_agent_pressed)
+	history_button.pressed.connect(_toggle_history_popup)
+	more_button.pressed.connect(_on_more_button_pressed)
 	refresh_models_button.pressed.connect(_on_refresh_models_pressed)
 	skills_dropdown.item_selected.connect(_on_skill_selected)
 	context_checkbox.toggled.connect(_on_context_toggled)
@@ -638,7 +1005,7 @@ func initialize_ui() -> void:
 	thinking_checkbox.toggled.connect(_on_thinking_toggled)
 	prompt_text_edit.gui_input.connect(_on_prompt_gui_input)
 	prompt_text_edit.text_changed.connect(_on_prompt_text_changed)
-	mention_list.item_activated.connect(_on_mention_selected)
+	prompt_text_edit.caret_changed.connect(_update_autocomplete)
 	
 	model_catalog.refresh_all()
 
@@ -647,6 +1014,23 @@ func _on_prompt_gui_input(event: InputEvent) -> void:
 		var key_event := event as InputEventKey
 		if not key_event.pressed or key_event.echo:
 			return
+		if autocomplete_panel.visible and not _autocomplete_items.is_empty():
+			if key_event.keycode in [KEY_UP, KEY_DOWN]:
+				if key_event.keycode == KEY_UP:
+					_autocomplete_selected = maxi(_autocomplete_selected - 1, 0)
+				else:
+					_autocomplete_selected = mini(_autocomplete_selected + 1, _autocomplete_buttons.size() - 1)
+				_highlight_autocomplete_selection()
+				get_viewport().set_input_as_handled()
+				return
+			if key_event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_TAB]:
+				_apply_autocomplete_selection()
+				get_viewport().set_input_as_handled()
+				return
+			if key_event.keycode == KEY_ESCAPE:
+				_hide_autocomplete()
+				get_viewport().set_input_as_handled()
+				return
 		if key_event.keycode != KEY_ENTER and key_event.keycode != KEY_KP_ENTER:
 			return
 		if key_event.shift_pressed:
@@ -749,33 +1133,20 @@ func _on_send_button_pressed() -> void:
 	_begin_assistant_message()
 	_show_assistant_status(_tr("ui.thinking"), _tr("ui.generating"))
 	prompt_text_edit.clear()
-	mention_popup.hide()
+	_hide_autocomplete()
 	send_button.disabled = true
 	var options: Dictionary = _get_query_options()
 	options["model_id"] = model_id
 	if mention_resolver:
 		options["attached_context"] = mention_resolver.build_attached_context(prompt)
 	_update_harness_label()
-	_refresh_history_dropdown()
+	_refresh_history_ui()
 	ai_handler.query_provider(provider_id, prompt, options)
 
-func _on_new_chat_pressed() -> void:
-	chat_history.create_session(_tr("ui.new_chat_session"))
-	clear_inputs()
-	_refresh_history_dropdown()
-	status_label.text = _tr("ui.status_new_chat")
-
-func _on_history_selected(index: int) -> void:
-	var session_id: String = String(history_dropdown.get_item_metadata(index))
-	if chat_history.set_active_session(session_id):
-		_restore_chat_from_history()
-		status_label.text = _tr("ui.status_chat_loaded")
-
-func _on_clear_button_pressed() -> void:
-	chat_history.clear_active_session()
-	clear_inputs()
-	_refresh_history_dropdown()
-	status_label.text = _tr("ui.status_cleared")
+func _on_more_button_pressed() -> void:
+	var menu_pos: Vector2 = more_button.global_position
+	more_menu.position = Vector2i(int(menu_pos.x - 80), int(menu_pos.y + more_button.size.y))
+	more_menu.popup()
 
 func _on_config_button_pressed() -> void:
 	config_dialog.open_dialog()
@@ -799,6 +1170,7 @@ func _on_configuration_saved() -> void:
 	if locale_manager:
 		locale_manager.reload_locale()
 	_apply_locale()
+	_update_history_popup_styles()
 	status_label.text = _tr("ui.status_config_saved")
 
 func _on_skill_selected(index: int) -> void:
@@ -843,14 +1215,14 @@ func _on_agent_step_update(step: int, max_steps: int, summary: String) -> void:
 func _on_query_completed(_success: bool, text: String) -> void:
 	_finish_assistant_message(text)
 	chat_history.add_message("assistant", text)
-	_refresh_history_dropdown()
+	_refresh_history_ui()
 	send_button.disabled = false
 	status_label.text = _tr("ui.status_done")
 
 func _on_query_failed(error_message: String) -> void:
 	_finish_assistant_message(error_message, true)
 	chat_history.add_message("assistant", error_message, true)
-	_refresh_history_dropdown()
+	_refresh_history_ui()
 	send_button.disabled = false
 	status_label.text = _tr("ui.status_error")
 

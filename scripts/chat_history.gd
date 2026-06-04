@@ -24,6 +24,9 @@ func load_history() -> void:
 	if parsed is Dictionary:
 		sessions = parsed.get("sessions", [])
 		active_session_id = String(parsed.get("active_session_id", ""))
+		for session in sessions:
+			if session is Dictionary:
+				_normalize_session(session)
 	if sessions.is_empty():
 		create_session("Nuevo chat")
 	elif active_session_id.is_empty() or _find_session(active_session_id).is_empty():
@@ -47,6 +50,8 @@ func create_session(title: String = "Nuevo chat") -> String:
 		"id": session_id,
 		"title": title,
 		"updated_at": Time.get_unix_time_from_system(),
+		"pinned": false,
+		"archived": false,
 		"messages": []
 	}
 	sessions.insert(0, session)
@@ -54,6 +59,69 @@ func create_session(title: String = "Nuevo chat") -> String:
 	_trim_sessions()
 	save_history()
 	return session_id
+
+func replace_active_session(title: String = "Nuevo chat") -> void:
+	var session: Dictionary = _find_session(active_session_id)
+	if session.is_empty():
+		create_session(title)
+		return
+	session["messages"] = []
+	session["title"] = title
+	session["updated_at"] = Time.get_unix_time_from_system()
+	session["archived"] = false
+	save_history()
+
+func get_active_session_title() -> String:
+	var session: Dictionary = _find_session(active_session_id)
+	if session.is_empty():
+		return "Chat"
+	return String(session.get("title", "Chat"))
+
+func set_session_title(session_id: String, title: String) -> bool:
+	var session: Dictionary = _find_session(session_id)
+	if session.is_empty():
+		return false
+	session["title"] = title.strip_edges()
+	session["updated_at"] = Time.get_unix_time_from_system()
+	save_history()
+	return true
+
+func pin_session(session_id: String, pinned: bool) -> bool:
+	var session: Dictionary = _find_session(session_id)
+	if session.is_empty():
+		return false
+	session["pinned"] = pinned
+	save_history()
+	return true
+
+func archive_session(session_id: String, archived: bool) -> bool:
+	var session: Dictionary = _find_session(session_id)
+	if session.is_empty():
+		return false
+	session["archived"] = archived
+	if archived and session_id == active_session_id and not sessions.is_empty():
+		for other in sessions:
+			if other is Dictionary and not bool(other.get("archived", false)):
+				active_session_id = String(other.get("id", ""))
+				break
+	save_history()
+	return true
+
+func delete_session(session_id: String) -> bool:
+	var index: int = -1
+	for i in sessions.size():
+		if sessions[i] is Dictionary and String(sessions[i].get("id", "")) == session_id:
+			index = i
+			break
+	if index < 0:
+		return false
+	sessions.remove_at(index)
+	if active_session_id == session_id:
+		active_session_id = String(sessions[0].get("id", "")) if not sessions.is_empty() else ""
+		if active_session_id.is_empty():
+			create_session("Nuevo chat")
+	save_history()
+	return true
 
 func set_active_session(session_id: String) -> bool:
 	if _find_session(session_id).is_empty():
@@ -86,16 +154,53 @@ func add_message(role: String, content: String, is_error: bool = false) -> void:
 		session["title"] = _title_from_message(content)
 	save_history()
 
-func get_session_summaries() -> Array:
+func get_session_summaries(filter: String = "", include_archived: bool = false) -> Array:
+	var normalized: String = filter.to_lower().strip_edges()
 	var result: Array = []
 	for session in sessions:
 		if session is Dictionary:
+			var archived: bool = bool(session.get("archived", false))
+			if archived and not include_archived:
+				continue
+			var title: String = String(session.get("title", "Chat"))
+			if not normalized.is_empty() and normalized not in title.to_lower():
+				continue
 			result.append({
 				"id": String(session.get("id", "")),
-				"title": String(session.get("title", "Chat")),
+				"title": title,
 				"updated_at": int(session.get("updated_at", 0)),
-				"message_count": int(session.get("messages", []).size())
+				"message_count": int(session.get("messages", []).size()),
+				"pinned": bool(session.get("pinned", false)),
+				"archived": archived
 			})
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var pinned_a: bool = bool(a.get("pinned", false))
+		var pinned_b: bool = bool(b.get("pinned", false))
+		if pinned_a != pinned_b:
+			return pinned_a
+		return int(a.get("updated_at", 0)) > int(b.get("updated_at", 0))
+	)
+	return result
+
+func get_archived_summaries(filter: String = "") -> Array:
+	var normalized: String = filter.to_lower().strip_edges()
+	var result: Array = []
+	for session in sessions:
+		if session is Dictionary and bool(session.get("archived", false)):
+			var title: String = String(session.get("title", "Chat"))
+			if not normalized.is_empty() and normalized not in title.to_lower():
+				continue
+			result.append({
+				"id": String(session.get("id", "")),
+				"title": title,
+				"updated_at": int(session.get("updated_at", 0)),
+				"message_count": int(session.get("messages", []).size()),
+				"pinned": bool(session.get("pinned", false)),
+				"archived": true
+			})
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.get("updated_at", 0)) > int(b.get("updated_at", 0))
+	)
 	return result
 
 func clear_active_session() -> void:
@@ -105,6 +210,21 @@ func clear_active_session() -> void:
 	session["messages"] = []
 	session["updated_at"] = Time.get_unix_time_from_system()
 	save_history()
+
+func clear_session_messages(session_id: String) -> bool:
+	var session: Dictionary = _find_session(session_id)
+	if session.is_empty():
+		return false
+	session["messages"] = []
+	session["updated_at"] = Time.get_unix_time_from_system()
+	save_history()
+	return true
+
+func _normalize_session(session: Dictionary) -> void:
+	if not session.has("pinned"):
+		session["pinned"] = false
+	if not session.has("archived"):
+		session["archived"] = false
 
 func _find_session(session_id: String) -> Dictionary:
 	for session in sessions:

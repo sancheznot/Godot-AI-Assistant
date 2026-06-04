@@ -69,6 +69,9 @@ func get_skills_catalog_prompt() -> String:
 		lines.append("- %s%s: %s" % [skill_id, active_marker, preview])
 	return "\n".join(lines)
 
+func get_skill_preview(skill_id: String) -> String:
+	return _get_skill_preview(skill_id)
+
 func _get_skill_preview(skill_id: String) -> String:
 	if not skills.has(skill_id):
 		return ""
