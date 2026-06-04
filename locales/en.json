@@ -97,6 +97,8 @@
 	"ui.status_querying_model": "Querying %s · %s…",
 	"ui.status_agent_step": "Agent step %d/%d: %s",
 	"ui.agent_step_updated": "Step %d/%d updated · waiting for next response…",
+	"ui.agent_paused_status": "Agent paused — reply below to continue",
+	"ui.agent_paused_placeholder": "Answer the agent's question or type «continue»…",
 	"ui.copy": "Copy",
 	"ui.copied": "Copied!",
 	"ui.copy_tooltip": "Copy this message to clipboard",

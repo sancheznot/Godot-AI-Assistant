@@ -38,8 +38,17 @@ Inspection (use ONE tool max, prefer @ mentions / attached context first):
 - get_script_errors: params {"script_path":"res://DoorScript.gd","clear_after":true} — GDScript parse errors + debugger errors
 - get_selection: params {}
 - inspect_node: params {"node_path":"Root/Child"} (includes node groups)
-- list_project_files: params {"extension":".tscn","limit":30}
+- list_project_files: params {"path":"res://Data/SceneBuilder","extension":".tscn","limit":50}
+- find_project_paths: params {"query":"Wall","path":"res://Data/SceneBuilder","extensions":[".tscn",".tres"],"limit":80}
+- resolve_project_path: params {"path":"res://data/SceneBuilder"} — fixes @ prefix and Linux case (Data vs data)
+- list_scene_builder_catalog: params {"path":"res://Data/SceneBuilder"} — categories + sample asset paths
 - get_tilemap_cells: params {"node_path":"Root/TileMapLayer","limit":200}
+
+Asset placement:
+- place_scene_builder_item: params {"item_path":"res://Data/SceneBuilder/Floor/Ground_05.tres","parent_node_path":"Floor_2","node_name":"Ground_05-n1","position":[-3.97,4,15.98],"scale":[100,100,100]}
+  parent_node_path MUST be a string (e.g. "Floor_2"). Alias parent_path also works. Floor_* containers are auto-created if missing.
+- create_mesh_from_file: params {"mesh_path":"res://models/prop.glb","parent_node_path":"","node_name":"Prop","position":[0,0,0],"collision":true}
+- instance_scene: params {"scene_path":"res://Data/SceneBuilder/Wall/scenes/Wall_08.tscn","parent_node_path":"","node_name":"Wall1","position":[0,0,0]}
 
 Node editing:
 - add_node: params {"node_type":"Node3D","node_name":"MyNode","parent_node_path":""}
@@ -51,6 +60,7 @@ Node editing:
 - scale_node_2d: params {"node_path":"Root/Child","scale":[2,2]}
 - rotate_node_3d: params {"node_path":"Root/Child","rotation_degrees":[0,90,0]}
 - create_box_mesh: params {"parent_node_path":"","node_name":"Crate","size":[1,1,1],"position":[0,0.5,0]}
+- ask_user: params {"question":"¿Altura de piso 3.5m o 4m?","choices":["3.5","4.0"]} — pauses agent until the user replies (does NOT consume a step)
 - set_tilemap_cell: params {"node_path":"Root/TileMapLayer","coords":[3,4],"source_id":0,"atlas_coords":[0,0]}
 
 Scripting (create AND attach a script in ONE call):
@@ -60,6 +70,8 @@ Scripting (create AND attach a script in ONE call):
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
+- To discover assets, use find_project_paths or list_scene_builder_catalog scoped to res://Data/SceneBuilder — do NOT call list_project_files repeatedly from res:// (results truncate).
+- For design choices (floor height, layout), call ask_user with a clear question instead of guessing or stopping.
 - After fixing scripts, call get_script_errors (or get_runtime_errors while the game runs) to verify; errors are cleared on read so the next check is fresh.
 - Use res:// paths only. NEVER prefix paths with "@" (write res://... not @res://...).
 - node_path / parent_node_path / attach_to are RELATIVE to the edited scene root (e.g. "Floor_1_exit/Ground_05"). Use "" for the root itself.
@@ -93,6 +105,12 @@ func list_tool_names() -> Array[String]:
 		"scale_node_2d",
 		"rotate_node_3d",
 		"create_box_mesh",
+		"find_project_paths",
+		"resolve_project_path",
+		"list_scene_builder_catalog",
+		"place_scene_builder_item",
+		"create_mesh_from_file",
+		"ask_user",
 		"get_tilemap_cells",
 		"set_tilemap_cell",
 		"list_project_files",
@@ -152,6 +170,18 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_set_tilemap_cell(params)
 		"list_project_files":
 			result = _tool_list_project_files(params)
+		"find_project_paths":
+			result = _tool_find_project_paths(params)
+		"resolve_project_path":
+			result = _tool_resolve_project_path(params)
+		"list_scene_builder_catalog":
+			result = _tool_list_scene_builder_catalog(params)
+		"place_scene_builder_item":
+			result = _tool_place_scene_builder_item(params)
+		"create_mesh_from_file":
+			result = _tool_create_mesh_from_file(params)
+		"ask_user":
+			result = _tool_ask_user(params)
 		"inspect_node":
 			result = _tool_inspect_node(params)
 		"create_script", "write_script":
@@ -171,6 +201,8 @@ func _normalize_tool_params(value: Variant) -> Variant:
 	# which breaks res:// validation. Strip it everywhere, recursively.
 	# Los modelos copian el prefijo "@" de las menciones en las rutas (p. ej. "@res://..."),
 	# lo que rompe la validación res://. Quitarlo en todas partes, recursivamente.
+	if value == null:
+		return ""
 	if value is String:
 		var s: String = value
 		if s.begins_with("@res://"):
@@ -182,6 +214,8 @@ func _normalize_tool_params(value: Variant) -> Variant:
 		var out: Dictionary = {}
 		for key in value:
 			out[key] = _normalize_tool_params(value[key])
+		if out.has("parent_path") and not out.has("parent_node_path"):
+			out["parent_node_path"] = out["parent_path"]
 		return out
 	if value is Array:
 		var arr: Array = []
@@ -222,6 +256,11 @@ func parse_and_execute_tool_calls(text: String) -> Array[Dictionary]:
 func has_tool_calls(text: String) -> bool:
 	return not extract_tool_call_json_strings(text).is_empty()
 
+func has_empty_tool_call_tags(text: String) -> bool:
+	var tag_regex := RegEx.new()
+	tag_regex.compile("(?is)<tool_call>\\s*</tool_call>")
+	return tag_regex.search(text) != null
+
 const READ_ONLY_TOOLS: Array[String] = [
 	"get_scene_tree",
 	"get_scene_snapshot",
@@ -232,6 +271,10 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"inspect_node",
 	"get_selection",
 	"list_project_files",
+	"find_project_paths",
+	"resolve_project_path",
+	"list_scene_builder_catalog",
+	"ask_user",
 	"get_tilemap_cells",
 ]
 
@@ -246,6 +289,8 @@ const MUTATING_TOOLS: Array[String] = [
 	"scale_node_2d",
 	"rotate_node_3d",
 	"create_box_mesh",
+	"place_scene_builder_item",
+	"create_mesh_from_file",
 	"set_tilemap_cell",
 	"create_scene",
 	"save_scene",
@@ -372,13 +417,31 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"errors": result.get("errors", []),
 				"cleared": bool(result.get("cleared", false)),
 			}
-		"list_project_files":
-			var files: Array = result.get("files", [])
+		"list_project_files", "find_project_paths", "list_scene_builder_catalog", "resolve_project_path":
+			var files: Array = result.get("files", result.get("matches", result.get("categories", [])))
+			var slim_result: Dictionary = {
+				"tool": tool_name,
+				"ok": true,
+			}
+			if result.has("path"):
+				slim_result["path"] = result.get("path", "")
+			if result.has("resolved"):
+				slim_result["resolved"] = result.get("resolved", "")
+			if result.has("query"):
+				slim_result["query"] = result.get("query", "")
+			if files is Array:
+				slim_result["count"] = files.size()
+				slim_result["items"] = files.slice(0, 20)
+				slim_result["truncated"] = files.size() > 20
+			elif result.has("categories"):
+				slim_result["categories"] = result.get("categories", [])
+			return slim_result
+		"ask_user":
 			return {
 				"tool": tool_name,
 				"ok": true,
-				"files": files.slice(0, 15),
-				"truncated": files.size() > 15,
+				"awaiting_user": true,
+				"question": result.get("question", ""),
 			}
 		_:
 			var slim: Dictionary = result.duplicate(true)
@@ -1039,8 +1102,8 @@ func _tool_save_scene() -> Dictionary:
 	return {"ok": true, "status": "saved"}
 
 func _tool_instance_scene(params: Dictionary) -> Dictionary:
-	var scene_path := String(params.get("scene_path", ""))
-	var parent_path := String(params.get("parent_node_path", ""))
+	var scene_path := _resolve_res_path(String(params.get("scene_path", "")))
+	var parent_path := String(params.get("parent_node_path", params.get("parent_path", "")))
 	var node_name := String(params.get("node_name", ""))
 	var position: Array = params.get("position", [])
 	
@@ -1055,11 +1118,10 @@ func _tool_instance_scene(params: Dictionary) -> Dictionary:
 	if root == null:
 		return {"ok": false, "error": "No scene loaded"}
 	
-	var parent_node: Node = root
-	if not parent_path.is_empty():
-		parent_node = root.get_node_or_null(NodePath(parent_path))
-		if parent_node == null:
-			return {"ok": false, "error": "Parent not found: %s" % parent_path}
+	var parent_resolved: Dictionary = _resolve_or_create_parent(parent_path)
+	if not bool(parent_resolved.get("ok", false)):
+		return parent_resolved
+	var parent_node: Node = parent_resolved.get("node")
 	
 	var instance: Node = packed.instantiate()
 	if not node_name.is_empty():
@@ -1074,7 +1136,40 @@ func _tool_instance_scene(params: Dictionary) -> Dictionary:
 			(instance as Node2D).position = Vector2(float(position[0]), float(position[1]))
 	
 	_mark_unsaved()
-	return {"ok": true, "node_path": _rel_path(instance), "instance_of": scene_path}
+	var result := {"ok": true, "node_path": _rel_path(instance), "instance_of": scene_path}
+	if bool(parent_resolved.get("created", false)):
+		result["parent_created"] = _rel_path(parent_node)
+	return result
+
+func _resolve_or_create_parent(parent_path: String) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return {"ok": false, "error": "No scene loaded"}
+	if parent_path.is_empty():
+		return {"ok": true, "node": root}
+	var existing: Node = root.get_node_or_null(NodePath(parent_path))
+	if existing != null:
+		return {"ok": true, "node": existing}
+	if not _looks_like_floor_container_name(parent_path):
+		return {"ok": false, "error": "Parent not found: %s" % parent_path}
+	var segments: PackedStringArray = parent_path.split("/", false)
+	var attach_parent: Node = root
+	for i in segments.size():
+		var partial := "/".join(segments.slice(0, i + 1))
+		var node: Node = root.get_node_or_null(NodePath(partial))
+		if node == null:
+			var container := Node3D.new()
+			container.name = segments[i]
+			attach_parent.add_child(container)
+			container.owner = root
+			node = container
+			_mark_unsaved()
+		attach_parent = node
+	return {"ok": true, "node": attach_parent, "created": true}
+
+func _looks_like_floor_container_name(parent_path: String) -> bool:
+	var leaf: String = parent_path.get_file()
+	return leaf.begins_with("Floor_") or leaf.begins_with("floor_") or leaf.begins_with("Level_")
 
 func _tool_add_node(params: Dictionary) -> Dictionary:
 	var root := _edited_root()
@@ -1301,11 +1396,211 @@ func _tool_set_tilemap_cell(params: Dictionary) -> Dictionary:
 	return {"ok": true, "node_path": _rel_path(node), "coords": coords_array, "source_id": source_id, "atlas_coords": atlas_array}
 
 func _tool_list_project_files(params: Dictionary) -> Dictionary:
-	var extension := String(params.get("extension", ".gd"))
-	var limit := int(params.get("limit", 30))
+	var root_path := _resolve_res_path(String(params.get("path", "res://")))
+	if root_path.is_empty():
+		return {"ok": false, "error": "Invalid or missing path (use res://...)"}
+	var extension := String(params.get("extension", ""))
+	var limit := clampi(int(params.get("limit", 50)), 1, 200)
+	var pattern := String(params.get("pattern", "")).to_lower()
 	var files: Array[String] = []
-	_collect_files("res://", extension, limit, files)
-	return {"ok": true, "files": files}
+	_collect_files(root_path, extension, pattern, limit, files)
+	return {
+		"ok": true,
+		"path": root_path,
+		"files": files,
+		"count": files.size(),
+		"truncated": files.size() >= limit,
+	}
+
+func _tool_find_project_paths(params: Dictionary) -> Dictionary:
+	var root_path := _resolve_res_path(String(params.get("path", "res://")))
+	if root_path.is_empty():
+		return {"ok": false, "error": "Invalid or missing path (use res://...)"}
+	var query := String(params.get("query", params.get("pattern", ""))).strip_edges().to_lower()
+	if query.is_empty():
+		return {"ok": false, "error": "query is required (e.g. Wall, Door, Ground)"}
+	var extensions: Array = params.get("extensions", [".tscn", ".tres", ".glb", ".gltf"])
+	var limit := clampi(int(params.get("limit", 80)), 1, 200)
+	var matches: Array[String] = []
+	_find_matching_files(root_path, query, extensions, limit, matches)
+	return {
+		"ok": true,
+		"path": root_path,
+		"query": query,
+		"matches": matches,
+		"count": matches.size(),
+		"truncated": matches.size() >= limit,
+	}
+
+func _tool_resolve_project_path(params: Dictionary) -> Dictionary:
+	var raw := String(params.get("path", "")).strip_edges()
+	if raw.is_empty():
+		return {"ok": false, "error": "path is required"}
+	var resolved := _resolve_res_path(raw)
+	if resolved.is_empty():
+		return {"ok": false, "error": "Path not found: %s" % raw, "tried": raw}
+	var exists_as_dir := DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(resolved))
+	var exists_as_file := FileAccess.file_exists(resolved)
+	return {
+		"ok": true,
+		"requested": raw,
+		"resolved": resolved,
+		"is_dir": exists_as_dir,
+		"is_file": exists_as_file,
+	}
+
+func _tool_list_scene_builder_catalog(params: Dictionary) -> Dictionary:
+	var root_path := _resolve_res_path(String(params.get("path", "res://Data/SceneBuilder")))
+	if root_path.is_empty() or not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(root_path)):
+		root_path = _resolve_res_path("res://Data/SceneBuilder")
+	if root_path.is_empty():
+		return {"ok": false, "error": "SceneBuilder folder not found (expected res://Data/SceneBuilder)"}
+	var categories: Array = []
+	var dir := DirAccess.open(root_path)
+	if dir == null:
+		return {"ok": false, "error": "Cannot open %s" % root_path}
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry != "." and entry != ".." and dir.current_is_dir():
+			var category_path := root_path.path_join(entry)
+			var sample_paths: Array[String] = []
+			var category_files: Array[String] = []
+			_find_matching_files(category_path, "", [".tres", ".tscn"], 500, category_files)
+			for i in mini(6, category_files.size()):
+				sample_paths.append(category_files[i])
+			categories.append({
+				"category": entry,
+				"path": category_path,
+				"file_count": category_files.size(),
+				"samples": sample_paths,
+				"scenes_folder": category_path.path_join("scenes"),
+			})
+		entry = dir.get_next()
+	dir.list_dir_end()
+	categories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return String(a.get("category", "")) < String(b.get("category", ""))
+	)
+	return {"ok": true, "path": root_path, "categories": categories}
+
+func _tool_ask_user(params: Dictionary) -> Dictionary:
+	var question := String(params.get("question", params.get("message", ""))).strip_edges()
+	if question.is_empty():
+		return {"ok": false, "error": "question is required"}
+	var choices: Array = params.get("choices", [])
+	var payload := {
+		"ok": true,
+		"awaiting_user": true,
+		"question": question,
+	}
+	if choices is Array and not choices.is_empty():
+		payload["choices"] = choices
+	return payload
+
+func _tool_place_scene_builder_item(params: Dictionary) -> Dictionary:
+	var item_path := _resolve_res_path(String(params.get("item_path", params.get("scene_path", ""))))
+	if item_path.is_empty():
+		return {"ok": false, "error": "item_path must be res://.../*.tres or *.tscn"}
+	var scene_path := _scene_path_from_scene_builder_item(item_path)
+	if scene_path.is_empty():
+		return {"ok": false, "error": "Could not resolve SceneBuilder scene for: %s" % item_path}
+	var instance_params: Dictionary = {
+		"scene_path": scene_path,
+		"parent_node_path": String(params.get("parent_node_path", params.get("parent_path", ""))),
+		"node_name": String(params.get("node_name", "")),
+		"position": params.get("position", []),
+	}
+	var result := _tool_instance_scene(instance_params)
+	if not bool(result.get("ok", false)):
+		return result
+	var node := _get_node_by_path(String(result.get("node_path", "")))
+	if node == null or not node is Node3D:
+		return result
+	var node3d := node as Node3D
+	var rotation_array: Array = params.get("rotation_degrees", params.get("rotation", []))
+	if rotation_array.size() >= 3:
+		node3d.rotation_degrees = Vector3(
+			float(rotation_array[0]), float(rotation_array[1]), float(rotation_array[2])
+		)
+	var scale_array: Array = params.get("scale", [])
+	if scale_array.size() >= 3:
+		node3d.scale = Vector3(float(scale_array[0]), float(scale_array[1]), float(scale_array[2]))
+	_mark_unsaved()
+	result["item_path"] = item_path
+	result["scene_path"] = scene_path
+	result["rotation_degrees"] = _vector3_to_array(node3d.rotation_degrees)
+	result["scale"] = _vector3_to_array(node3d.scale)
+	return result
+
+func _tool_create_mesh_from_file(params: Dictionary) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return {"ok": false, "error": "No scene loaded"}
+	var mesh_path := _resolve_res_path(String(params.get("mesh_path", params.get("path", ""))))
+	if mesh_path.is_empty():
+		return {"ok": false, "error": "mesh_path must be res://... (glb, gltf, tscn, mesh, obj)"}
+	var parent_path := String(params.get("parent_node_path", ""))
+	var node_name := String(params.get("node_name", mesh_path.get_file().get_basename()))
+	var parent_node: Node = root
+	if not parent_path.is_empty():
+		parent_node = root.get_node_or_null(NodePath(parent_path))
+		if parent_node == null:
+			return {"ok": false, "error": "Parent not found: %s" % parent_path}
+	var resource: Variant = load(mesh_path)
+	if resource == null:
+		return {"ok": false, "error": "Could not load: %s" % mesh_path}
+	var created_node: Node3D = null
+	var use_collision: bool = bool(params.get("collision", false))
+	if resource is PackedScene:
+		var packed := resource as PackedScene
+		var instance: Node = packed.instantiate()
+		if instance is Node3D:
+			created_node = instance as Node3D
+		else:
+			return {"ok": false, "error": "Scene root is not Node3D: %s" % mesh_path}
+	elif resource is Mesh:
+		var mesh_instance := MeshInstance3D.new()
+		mesh_instance.mesh = resource as Mesh
+		created_node = mesh_instance
+	else:
+		return {"ok": false, "error": "Unsupported resource type for %s" % mesh_path}
+	created_node.name = _make_unique_name(parent_node, node_name)
+	if use_collision and created_node is MeshInstance3D:
+		var body := StaticBody3D.new()
+		body.name = _make_unique_name(parent_node, node_name + "Body")
+		var collision_shape := CollisionShape3D.new()
+		var source_mesh: Mesh = (created_node as MeshInstance3D).mesh
+		if source_mesh:
+			collision_shape.shape = source_mesh.create_trimesh_shape()
+		body.add_child(collision_shape)
+		collision_shape.owner = root
+		parent_node.add_child(body)
+		body.owner = root
+		body.add_child(created_node)
+		created_node.owner = root
+		created_node = body
+	else:
+		parent_node.add_child(created_node)
+		created_node.owner = root
+	var position: Array = params.get("position", [])
+	if position.size() >= 3:
+		created_node.position = Vector3(float(position[0]), float(position[1]), float(position[2]))
+	var rotation_array: Array = params.get("rotation_degrees", params.get("rotation", []))
+	if rotation_array.size() >= 3:
+		created_node.rotation_degrees = Vector3(
+			float(rotation_array[0]), float(rotation_array[1]), float(rotation_array[2])
+		)
+	var scale_array: Array = params.get("scale", [])
+	if scale_array.size() >= 3:
+		created_node.scale = Vector3(float(scale_array[0]), float(scale_array[1]), float(scale_array[2]))
+	_mark_unsaved()
+	return {
+		"ok": true,
+		"node_path": _rel_path(created_node),
+		"mesh_path": mesh_path,
+		"collision": use_collision,
+		"position": _vector3_to_array(created_node.position),
+	}
 
 func _tool_inspect_node(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))
@@ -1524,7 +1819,7 @@ func _coerce_value(value):
 				return Vector4(float(value[0]), float(value[1]), float(value[2]), float(value[3]))
 	return value
 
-func _collect_files(path: String, extension: String, limit: int, result: Array[String]) -> void:
+func _collect_files(path: String, extension: String, pattern: String, limit: int, result: Array[String]) -> void:
 	if result.size() >= limit:
 		return
 	var dir := DirAccess.open(path)
@@ -1537,8 +1832,122 @@ func _collect_files(path: String, extension: String, limit: int, result: Array[S
 			var full_path := path.path_join(entry)
 			if dir.current_is_dir():
 				if not entry.begins_with("."):
-					_collect_files(full_path, extension, limit, result)
-			elif extension.is_empty() or entry.ends_with(extension):
+					_collect_files(full_path, extension, pattern, limit, result)
+			elif _file_matches_query(full_path, entry, extension, pattern):
 				result.append(full_path)
 		entry = dir.get_next()
 	dir.list_dir_end()
+
+func _find_matching_files(
+	path: String,
+	query: String,
+	extensions: Array,
+	limit: int,
+	result: Array[String]
+) -> void:
+	if result.size() >= limit:
+		return
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "" and result.size() < limit:
+		if entry != "." and entry != "..":
+			var full_path := path.path_join(entry)
+			if dir.current_is_dir():
+				if not entry.begins_with("."):
+					_find_matching_files(full_path, query, extensions, limit, result)
+			elif _file_matches_extensions(entry, extensions):
+				var haystack := full_path.to_lower()
+				if query.is_empty() or query in haystack or query in entry.to_lower():
+					result.append(full_path)
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+func _file_matches_extensions(file_name: String, extensions: Array) -> bool:
+	if extensions.is_empty():
+		return true
+	for ext in extensions:
+		if file_name.ends_with(String(ext)):
+			return true
+	return false
+
+func _file_matches_query(full_path: String, file_name: String, extension: String, pattern: String) -> bool:
+	if not extension.is_empty() and not file_name.ends_with(extension):
+		return false
+	if pattern.is_empty():
+		return true
+	var lower_path := full_path.to_lower()
+	var lower_name := file_name.to_lower()
+	return pattern in lower_path or pattern in lower_name
+
+func _resolve_res_path(raw: String) -> String:
+	var path := raw.strip_edges()
+	if path.is_empty():
+		return ""
+	if path.begins_with("@res://"):
+		path = path.substr(1)
+	elif path.begins_with("@/"):
+		path = "res://" + path.substr(2)
+	elif not path.begins_with("res://"):
+		if path.begins_with("/"):
+			path = "res:/" + path
+		else:
+			path = "res://" + path.trim_prefix("/")
+	if FileAccess.file_exists(path) or DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(path)):
+		return path
+	return _case_insensitive_res_path(path)
+
+func _case_insensitive_res_path(path: String) -> String:
+	if not path.begins_with("res://"):
+		return ""
+	var relative := path.substr(6)
+	if relative.is_empty():
+		return "res://"
+	var segments: PackedStringArray = relative.split("/", false)
+	var current := "res://"
+	for segment in segments:
+		if segment.is_empty():
+			continue
+		var resolved := _match_dir_entry(current, segment)
+		if resolved.is_empty():
+			return ""
+		current = current.path_join(resolved)
+	if FileAccess.file_exists(current) or DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(current)):
+		return current
+	return ""
+
+func _match_dir_entry(parent_res_path: String, wanted: String) -> String:
+	if FileAccess.file_exists(parent_res_path.path_join(wanted)):
+		return wanted
+	var dir := DirAccess.open(parent_res_path)
+	if dir == null:
+		return ""
+	var wanted_lower := wanted.to_lower()
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			if entry.to_lower() == wanted_lower:
+				dir.list_dir_end()
+				return entry
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return ""
+
+func _scene_path_from_scene_builder_item(item_path: String) -> String:
+	if item_path.ends_with(".tscn"):
+		return item_path if FileAccess.file_exists(item_path) else ""
+	var resource: Variant = load(item_path)
+	if resource != null:
+		var uid_str := ""
+		if resource.get("uid"):
+			uid_str = String(resource.get("uid"))
+		if not uid_str.is_empty() and ResourceUID.has_id(ResourceUID.text_to_id(uid_str)):
+			return ResourceUID.get_id_path(ResourceUID.text_to_id(uid_str))
+	var base_name := item_path.get_file().get_basename()
+	var scenes_candidate := item_path.get_base_dir().path_join("scenes").path_join(base_name + ".tscn")
+	if FileAccess.file_exists(scenes_candidate):
+		return scenes_candidate
+	return ""

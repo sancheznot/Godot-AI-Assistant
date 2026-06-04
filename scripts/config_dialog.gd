@@ -262,9 +262,9 @@ func _make_settings_section() -> PanelContainer:
 	var agent_steps := SpinBox.new()
 	agent_steps.name = "AgentMaxSteps"
 	agent_steps.min_value = 1
-	agent_steps.max_value = 20
+	agent_steps.max_value = 64
 	agent_steps.step = 1
-	agent_steps.value = float(config_manager.get_setting("agent_max_steps", 8))
+	agent_steps.value = float(config_manager.get_setting("agent_max_steps", 24))
 	agent_steps.custom_minimum_size = Vector2(120, 28)
 	_style_spin_box(agent_steps)
 	grid.add_child(agent_steps)
@@ -696,6 +696,11 @@ func _style_line_edit(line_edit: LineEdit) -> void:
 	line_edit.add_theme_color_override("font_placeholder_color", COLOR_MUTED)
 
 func _style_spin_box(spin_box: SpinBox) -> void:
+	var line_edit := spin_box.get_line_edit()
+	if line_edit:
+		line_edit.text_submitted.connect(func(text: String) -> void:
+			_commit_spin_box(spin_box, text)
+		)
 	spin_box.add_theme_font_size_override("font_size", 12)
 	if spin_box.get_line_edit():
 		_style_line_edit(spin_box.get_line_edit())
@@ -749,9 +754,26 @@ func _style_button(button: Button, primary: bool) -> void:
 	button.add_theme_stylebox_override("pressed", hover)
 	button.add_theme_stylebox_override("focus", normal)
 
+func _commit_spin_box(spin_box: SpinBox, text_override: String = "") -> void:
+	# SpinBox.value is not updated until focus leaves the LineEdit; apply typed text on save.
+	# SpinBox.value no se actualiza hasta que el LineEdit pierde foco; aplicar texto al guardar.
+	var line_edit := spin_box.get_line_edit()
+	var text := text_override.strip_edges()
+	if text.is_empty() and line_edit != null:
+		text = line_edit.text.strip_edges()
+	if text.is_empty():
+		return
+	if not text.is_valid_float():
+		return
+	spin_box.value = clampf(float(text), spin_box.min_value, spin_box.max_value)
+
 func _on_save_pressed() -> void:
 	var settings_grid: GridContainer = provider_sections.get("_settings")
 	if settings_grid:
+		for spin_name in ["Temperature", "MaxTokens", "AgentMaxSteps"]:
+			var spin_node := settings_grid.get_node_or_null(spin_name)
+			if spin_node is SpinBox:
+				_commit_spin_box(spin_node as SpinBox)
 		var default_provider: OptionButton = settings_grid.get_node("DefaultProvider") as OptionButton
 		var context_depth_node: OptionButton = settings_grid.get_node("ContextDepth") as OptionButton
 		var ui_language_node: OptionButton = settings_grid.get_node("UiLanguage") as OptionButton

@@ -170,13 +170,15 @@ func _is_filler_line(line: String) -> bool:
 
 func has_degenerate_repetition(text: String) -> bool:
 	var lines: PackedStringArray = text.split("\n")
-	if lines.size() < 10:
+	if lines.size() < 12:
 		return false
 	var emoji_only: int = 0
 	var normalized_counts: Dictionary = {}
 	for line in lines:
 		var trimmed: String = line.strip_edges()
 		if trimmed.is_empty():
+			continue
+		if _is_toolish_line(trimmed):
 			continue
 		if _is_emoji_only_line(trimmed):
 			emoji_only += 1
@@ -188,7 +190,21 @@ func has_degenerate_repetition(text: String) -> bool:
 	if emoji_only >= 6:
 		return true
 	for count in normalized_counts.values():
-		if int(count) >= 4:
+		if int(count) >= 6:
+			return true
+	return false
+
+func _is_toolish_line(line: String) -> bool:
+	var lower: String = line.to_lower()
+	if lower.begins_with("{") or lower.begins_with("["):
+		return true
+	var markers: PackedStringArray = [
+		"node_name", "parent_node_path", "parent_path", "position", "rotation",
+		"scale", "item_path", "scene_path", "ground_", "wall_", "floor_",
+		"tool_call", "validation error", "renombro", "mismo problema",
+	]
+	for marker in markers:
+		if lower.contains(marker):
 			return true
 	return false
 
@@ -212,17 +228,16 @@ func _get_agent_instructions() -> String:
 	return (
 		"## Agent mode\n"
 		+ "You act over multiple steps using editor tools to ACTUALLY perform the user's task.\n"
-		+ "Do NOT chain read-only tools (get_scene_snapshot + get_scene_tree + inspect_node). "
-		+ "Use get_scene_groups to discover node groups (e.g. players). "
-		+ "Use get_input_map to read InputMap actions/keys — never ask the user for action names. "
-		+ "Use get_runtime_errors after playtests; use get_script_errors for GDScript parse errors in .gd files. "
-		+ "Use @ mentions / attached context for node paths first. At most ONE inspect tool if needed.\n"
-		+ "For scripts: call create_script in ONE step with attach_to + full content (unless user asked for code only).\n"
-		+ "Emit tool calls using exactly: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>\n"
-		+ "After each tool batch you receive compact results — use them and ACT, do not re-inspect.\n"
-		+ "Only reply with a final summary (and NO <tool_call> blocks) AFTER the task is done. "
-		+ "Keep the final summary SHORT (max 8 lines). Never repeat the same sentence, checklist, or emoji spam.\n"
-		+ "If user wants code to paste themselves, reply with ```gdscript and do NOT call create_script."
+		+ "Every step that needs data or edits MUST include at least one valid "
+		+ "<tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call> with JSON inside — NEVER empty <tool_call></tool_call> tags.\n"
+		+ "Do NOT narrate plans ('I will explore…', 'Voy a…') without tool calls in the SAME message.\n"
+		+ "SceneBuilder assets live under res://Data/SceneBuilder (capital D). "
+		+ "Bootstrap context may already include catalog + snapshot — do NOT re-list res:// from scratch.\n"
+		+ "Discovery: find_project_paths, list_scene_builder_catalog, resolve_project_path.\n"
+		+ "Placement: place_scene_builder_item or instance_scene, then save_scene when done.\n"
+		+ "Design choices: ask_user tool (pauses until user replies).\n"
+		+ "Scripts: create_script in ONE step. Read-only inspect tools do NOT consume edit steps.\n"
+		+ "Only reply with a final summary AFTER the task is done (max 8 lines, no emoji spam)."
 	)
 
 func _load_base_context() -> String:

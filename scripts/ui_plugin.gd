@@ -158,6 +158,7 @@ func _ready() -> void:
 	ai_handler.request_dequeued.connect(_on_request_dequeued)
 	ai_handler.agent_step_update.connect(_on_agent_step_update)
 	ai_handler.agent_log_updated.connect(_on_agent_log_updated)
+	ai_handler.agent_paused_for_user.connect(_on_agent_paused_for_user)
 	ai_handler.response_retry_attempt.connect(_on_response_retry_attempt)
 	
 	model_catalog = preload("res://addons/ai_assistant_plugin/scripts/model_catalog.gd").new()
@@ -1428,9 +1429,11 @@ func _toggle_history_popup() -> void:
 	history_popup.popup()
 
 func _clear_history_panel_children(container: Node) -> void:
+	# queue_free evita liberar nodos mientras aún emiten señales (p. ej. tras confirmar borrado)
+	# queue_free avoids freeing nodes while they may still be emitting signals (e.g. after bulk delete)
 	for child in container.get_children():
 		container.remove_child(child)
-		child.free()
+		child.queue_free()
 
 func _render_history_panel() -> void:
 	_clear_history_panel_children(history_list_vbox)
@@ -1663,7 +1666,7 @@ func _setup_delete_confirm_dialog() -> void:
 	_delete_confirm_dialog.unresizable = true
 	_delete_confirm_dialog.initial_position = Window.WINDOW_INITIAL_POSITION_CENTER_MAIN_WINDOW_SCREEN
 	add_child(_delete_confirm_dialog)
-	_delete_confirm_dialog.confirmed.connect(_on_delete_chat_confirmed)
+	_delete_confirm_dialog.confirmed.connect(_on_delete_chat_confirmed, CONNECT_DEFERRED)
 	_update_delete_confirm_dialog_locale()
 
 func _update_delete_confirm_dialog_locale() -> void:
@@ -1716,7 +1719,9 @@ func _prompt_delete_active_chat() -> void:
 func _on_delete_chat_confirmed() -> void:
 	var session_ids: Array = _pending_delete_session_ids.duplicate()
 	_pending_delete_session_ids.clear()
-	_execute_delete_sessions(session_ids)
+	if session_ids.is_empty():
+		return
+	call_deferred("_execute_delete_sessions", session_ids)
 
 func _execute_delete_session(session_id: String) -> void:
 	_execute_delete_sessions([session_id])
@@ -2472,7 +2477,7 @@ func _get_query_options() -> Dictionary:
 		"enable_thinking": thinking_enabled,
 		"enable_vision": vision_enabled,
 		"enable_agent_loop": agent_checkbox.button_pressed,
-		"max_agent_steps": config_manager.get_setting("agent_max_steps", 8),
+		"max_agent_steps": config_manager.get_setting("agent_max_steps", 24),
 		"context_depth": config_manager.get_setting("context_depth", "intermediate"),
 	}
 
@@ -2782,6 +2787,12 @@ func _on_agent_step_update(step: int, max_steps: int, summary: String) -> void:
 	status_label.text = _tr("ui.status_agent_step", [step, max_steps, summary])
 	_show_assistant_status(_tr("ui.agent_working"), summary, step, max_steps)
 
+func _on_agent_paused_for_user(question: String) -> void:
+	status_label.text = _tr("ui.agent_paused_status")
+	prompt_text_edit.placeholder_text = _tr("ui.agent_paused_placeholder")
+	if not question.is_empty():
+		status_label.tooltip_text = question
+
 func _on_agent_log_updated(text: String, step: int, max_steps: int) -> void:
 	_current_agent_log_text = text
 	_active_copy_source = text
@@ -2812,7 +2823,13 @@ func _on_query_completed(_success: bool, text: String) -> void:
 	_finish_assistant_message(text)
 	chat_history.add_message("assistant", text)
 	_refresh_history_ui()
-	_release_ui_after_terminal_event(_tr("ui.status_done"))
+	if ai_handler and ai_handler.is_agent_paused():
+		_on_agent_paused_for_user(ai_handler.get_agent_pause_question())
+		_release_ui_after_terminal_event(_tr("ui.agent_paused_status"))
+	else:
+		prompt_text_edit.placeholder_text = _tr("ui.composer_placeholder")
+		status_label.tooltip_text = ""
+		_release_ui_after_terminal_event(_tr("ui.status_done"))
 	_sync_request_ui_state()
 
 func _on_query_failed(error_message: String) -> void:

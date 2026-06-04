@@ -134,7 +134,8 @@ func create_default_config() -> void:
 			"enable_thinking": true,
 			"enable_vision": true,
 			"ui_language": "auto",
-			"agent_max_steps": 8,
+			"agent_max_steps": 24,
+			"agent_step_extension": 12,
 			"max_response_retries": 3,
 			"ollama_max_num_ctx": 32768,
 			"active_skill": "godot_scene_editing",
@@ -225,7 +226,9 @@ func _migrate_legacy_config() -> void:
 	if not settings.has("enable_agent_loop"):
 		settings["enable_agent_loop"] = true
 	if not settings.has("agent_max_steps"):
-		settings["agent_max_steps"] = 8
+		settings["agent_max_steps"] = 24
+	if not settings.has("agent_step_extension"):
+		settings["agent_step_extension"] = 12
 	if not settings.has("max_response_retries"):
 		settings["max_response_retries"] = 3
 	if not settings.has("active_skill"):

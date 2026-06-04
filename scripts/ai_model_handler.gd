@@ -10,6 +10,7 @@ signal queue_updated(queue_size: int)
 signal request_dequeued(user_prompt: String, options: Dictionary)
 signal agent_step_update(step: int, max_steps: int, summary: String)
 signal agent_log_updated(text: String, step: int, max_steps: int)
+signal agent_paused_for_user(question: String)
 signal response_retry_attempt(attempt: int, max_attempts: int, reason: String)
 
 const MAX_CONVERSATION_MESSAGES := 24
@@ -33,7 +34,9 @@ var _using_cursor_cloud: bool = false
 
 var _agent_active: bool = false
 var _agent_step: int = 0
-var _agent_max_steps: int = 8
+var _agent_max_steps: int = 24
+var _agent_paused: bool = false
+var _agent_pause_question: String = ""
 var _agent_messages: Array = []
 var _agent_system_prompt: String = ""
 var _agent_provider_id: String = ""
@@ -43,6 +46,7 @@ var _agent_stall_count: int = 0
 var _agent_last_response_signature: String = ""
 var _agent_tools_executed: int = 0
 var _agent_act_nudges: int = 0
+var _agent_model_tool_batches: int = 0
 var _agent_failed_batches: int = 0
 var _agent_code_only: bool = false
 var _agent_read_only_streak: int = 0
@@ -106,6 +110,12 @@ func is_busy() -> bool:
 		return true
 	return false
 
+func is_agent_paused() -> bool:
+	return _agent_paused
+
+func get_agent_pause_question() -> String:
+	return _agent_pause_question
+
 func get_queue_size() -> int:
 	return _request_queue.size()
 
@@ -146,6 +156,9 @@ func _start_request(request_item: Dictionary) -> void:
 	var user_prompt: String = String(request_item.get("user_prompt", ""))
 	var options: Dictionary = request_item.get("options", {})
 	_cancel_requested = false
+	if _agent_paused:
+		_resume_agent_loop(user_prompt, provider_id, options)
+		return
 	_is_processing = true
 	
 	var provider_cfg: Dictionary = config_manager.get_provider_config(provider_id).duplicate(true)
@@ -253,7 +266,7 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_step = 1
 	_agent_max_steps = int(options.get(
 		"max_agent_steps",
-		config_manager.get_setting("agent_max_steps", 8)
+		config_manager.get_setting("agent_max_steps", 24)
 	))
 	_agent_max_steps = maxi(_agent_max_steps, 1)
 	_agent_provider_id = provider_id
@@ -263,6 +276,7 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_last_response_signature = ""
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
+	_agent_model_tool_batches = 0
 	_agent_failed_batches = 0
 	_agent_code_only = _user_wants_code_only(user_prompt)
 	_agent_read_only_streak = 0
@@ -276,6 +290,13 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 			+ "At most ONE inspect tool if a path is truly unknown, then answer with code and short steps."
 		)
 	_agent_messages = _build_conversation_messages(user_prompt, options)
+	var bootstrap_context: String = _bootstrap_agent_context(user_prompt)
+	if not bootstrap_context.is_empty():
+		_agent_log.append("### Bootstrap\nContexto precargado (catálogo SceneBuilder + snapshot de escena).")
+		_agent_messages.append({
+			"role": "user",
+			"content": bootstrap_context + _language_hint_suffix(),
+		})
 	agent_step_update.emit(_agent_step, _agent_max_steps, "Starting agent loop...")
 	_send_agent_request()
 
@@ -530,7 +551,7 @@ func _evaluate_response_text(text: String) -> Dictionary:
 	var content: String = String(parsed.get("content", trimmed)).strip_edges()
 	if content.is_empty():
 		content = trimmed
-	if _pending_enable_tools and _response_has_tool_calls(content):
+	if _pending_enable_tools and _response_has_tool_calls(_tool_source_text(parsed, content, trimmed)):
 		return {"ok": true, "parsed": parsed, "content": content}
 	return {"ok": true, "parsed": parsed, "content": content}
 
@@ -815,8 +836,9 @@ func _handle_single_response(text: String) -> void:
 	var parsed: Dictionary = evaluation.get("parsed", _process_model_text(text))
 	var content: String = String(evaluation.get("content", String(parsed.get("content", text))))
 	var final_text: String = _format_model_output(parsed)
-	if _pending_enable_tools and editor_tools and _response_has_tool_calls(content):
-		var tool_results: Array = editor_tools.parse_and_execute_tool_calls(content)
+	var tool_source: String = _tool_source_text(parsed, content, text)
+	if _pending_enable_tools and editor_tools and _response_has_tool_calls(tool_source):
+		var tool_results: Array = editor_tools.parse_and_execute_tool_calls(tool_source)
 		if not tool_results.is_empty():
 			final_text += "\n\n### Tool results\n%s" % JSON.stringify(tool_results, "\t")
 	_handle_request_success(true, final_text)
@@ -831,6 +853,7 @@ func _handle_agent_response(text: String) -> void:
 		return
 	var parsed: Dictionary = evaluation.get("parsed", _process_model_text(text))
 	var content: String = String(evaluation.get("content", String(parsed.get("content", text))))
+	var tool_source: String = _tool_source_text(parsed, content, text)
 	var display_parsed: Dictionary = _parsed_for_display(parsed, content)
 	var formatted: String = _format_model_output(display_parsed)
 	if harness != null and harness.has_method("sanitize_display_text"):
@@ -843,10 +866,19 @@ func _handle_agent_response(text: String) -> void:
 	var repeated: bool = not signature.is_empty() and signature == _agent_last_response_signature
 	_agent_last_response_signature = signature
 	
-	var tool_calls_detected: bool = _pending_enable_tools and editor_tools != null and editor_tools.has_tool_calls(content)
+	var tool_calls_detected: bool = (
+		_pending_enable_tools
+		and editor_tools != null
+		and editor_tools.has_tool_calls(tool_source)
+	)
+	var empty_tool_tags: bool = (
+		editor_tools != null
+		and editor_tools.has_method("has_empty_tool_call_tags")
+		and editor_tools.has_empty_tool_call_tags(tool_source)
+	)
 	var tool_results: Array = []
 	if tool_calls_detected:
-		tool_results = editor_tools.parse_and_execute_tool_calls(content)
+		tool_results = editor_tools.parse_and_execute_tool_calls(tool_source)
 	
 	# Count tool calls that actually changed/inspected the scene without error.
 	# Contar las tool calls que realmente se ejecutaron sin error.
@@ -858,13 +890,23 @@ func _handle_agent_response(text: String) -> void:
 	
 	if tool_calls_detected and tool_results.is_empty():
 		_agent_log.append("### Tool parse warning (step %d)\nNo se pudieron ejecutar los bloques JSON detectados." % _agent_step)
+	elif empty_tool_tags and tool_results.is_empty():
+		_agent_log.append("### Tool parse warning (step %d)\nDetecté <tool_call></tool_call> vacío — falta JSON dentro del tag." % _agent_step)
 	
 	if not tool_results.is_empty():
+		_agent_model_tool_batches += 1
 		var compact_results: String = (
 			editor_tools.compact_tool_results_for_context(tool_results)
 			if editor_tools else JSON.stringify(tool_results, "\t")
 		)
 		_agent_log.append("### Tool results (step %d)\n%s" % [_agent_step, compact_results])
+	
+	for entry in tool_results:
+		if entry is Dictionary:
+			var tool_result: Variant = entry.get("result", {})
+			if tool_result is Dictionary and bool(tool_result.get("awaiting_user", false)):
+				_pause_agent_for_user(String(tool_result.get("question", "")), true)
+				return
 	
 	if _agent_code_only and _response_has_code_block(content):
 		_finish_agent_loop(true, _compose_agent_output())
@@ -902,7 +944,12 @@ func _handle_agent_response(text: String) -> void:
 		return
 	
 	var visible_turn: String = _visible_response_text(content, parsed)
-	if _content_has_degenerate_repetition(visible_turn):
+	var had_mutation: bool = (
+		ok_tool_count > 0
+		and editor_tools != null
+		and editor_tools.batch_had_mutation(tool_results)
+	)
+	if _content_has_degenerate_repetition(visible_turn) and not had_mutation:
 		_finish_agent_loop(
 			true,
 			_compose_agent_output()
@@ -910,24 +957,29 @@ func _handle_agent_response(text: String) -> void:
 		)
 		return
 	
-	# 1) Tools executed (any) and steps remaining -> feed compact results back, continue.
-	if not tool_results.is_empty() and _agent_step < _agent_max_steps:
+	# 1) Tools executed -> feed compact results back, continue.
+	# Read-only batches (list/find/inspect) do NOT consume an agent step.
+	# Los lotes solo lectura (list/find/inspect) NO consumen un paso del agente.
+	if not tool_results.is_empty() and (_agent_step < _agent_max_steps or batch_read_only):
 		if ok_tool_count > 0 and editor_tools != null and editor_tools.batch_had_mutation(tool_results):
-			if _looks_like_task_complete(visible_turn) or _content_has_degenerate_repetition(visible_turn):
+			if _looks_like_task_complete(visible_turn):
 				_finish_agent_loop(true, _compose_agent_output())
 				return
 		var followup: String = _build_tool_followup(tool_results)
 		_agent_messages.append({"role": "user", "content": followup})
-		_agent_step += 1
+		if not batch_read_only:
+			_agent_step += 1
 		var summary: String = "Ejecutadas %d tool(s), continuando…" % tool_results.size()
-		if _agent_read_only_streak >= 2:
+		if batch_read_only:
+			summary = "Exploración (%d tool(s)) — no consume paso" % tool_results.size()
+		elif _agent_read_only_streak >= 2:
 			summary = "Inspección repetida — actúa o entrega código"
 		agent_step_update.emit(_agent_step, _agent_max_steps, summary)
 		_send_agent_request()
 		return
 	
 	if not tool_results.is_empty() and _agent_step >= _agent_max_steps:
-		_finish_agent_loop(true, _compose_agent_output() + "\n\n---\nAgente detenido: máximo de pasos alcanzado.")
+		_pause_agent_for_user(_max_steps_pause_question(), true)
 		return
 	
 	# 2) No tools this turn. If the model is just summarizing/inspecting but never
@@ -955,7 +1007,7 @@ func _handle_agent_response(text: String) -> void:
 		return
 	
 	if _agent_step >= _agent_max_steps:
-		_finish_agent_loop(true, _compose_agent_output() + "\n\n---\nAgente detenido: máximo de pasos alcanzado.")
+		_pause_agent_for_user(_max_steps_pause_question(), true)
 		return
 	
 	if _pending_enable_tools:
@@ -965,9 +1017,10 @@ func _handle_agent_response(text: String) -> void:
 				"Ya inspeccionaste la escena. Responde AHORA con el bloque ```gdscript completo "
 				+ "y pasos breves. No uses más tools."
 			)
-		elif _agent_tools_executed == 0:
+		elif _agent_model_tool_batches == 0:
 			_agent_act_nudges += 1
-			if _agent_act_nudges > 3:
+			var needs_example: bool = empty_tool_tags or _response_is_narration_only(content, parsed)
+			if _agent_act_nudges > 6:
 				_finish_agent_loop(
 					false,
 					_compose_agent_output()
@@ -975,7 +1028,7 @@ func _handle_agent_response(text: String) -> void:
 					+ "Prueba con un modelo más capaz para tools o reformula la petición."
 				)
 				return
-			nudge = _act_now_nudge()
+			nudge = _act_now_nudge(needs_example)
 		else:
 			nudge = (
 				"No tool calls were detected in your last response. "
@@ -1028,18 +1081,76 @@ func _build_tool_followup(tool_results: Array) -> String:
 func _compose_agent_output() -> String:
 	return "\n\n".join(_agent_log)
 
+func _max_steps_pause_question() -> String:
+	if _active_user_language == "es":
+		return (
+			"Alcancé el límite de %d pasos de edición. "
+			% _agent_max_steps
+			+ "Responde «continuar» para seguir con la misma tarea, o reformula lo que falta."
+		)
+	return (
+		"Reached the %d-step edit limit. "
+		% _agent_max_steps
+		+ "Reply «continue» to keep working on the same task, or clarify what is still missing."
+	)
+
+func _looks_like_continue_reply(text: String) -> bool:
+	var lower: String = text.to_lower().strip_edges()
+	var markers: PackedStringArray = [
+		"continuar", "continue", "adelante", "go ahead", "sí adelante", "si adelante",
+		"yes continue", "keep going", "sigue", "proceed",
+	]
+	for marker in markers:
+		if lower == marker or lower.begins_with(marker + " ") or lower.ends_with(" " + marker):
+			return true
+	return lower in ["sí", "si", "yes", "ok", "vale"]
+
+func _pause_agent_for_user(question: String, partial_success: bool) -> void:
+	if question.strip_edges().is_empty():
+		question = _max_steps_pause_question()
+	_agent_paused = true
+	_agent_pause_question = question.strip_edges()
+	_agent_log.append("### Pausado\n%s" % _agent_pause_question)
+	var output: String = (
+		_compose_agent_output()
+		+ "\n\n---\n**Esperando tu respuesta:** "
+		+ _agent_pause_question
+	)
+	_is_processing = false
+	_http_in_flight = false
+	agent_paused_for_user.emit(_agent_pause_question)
+	_handle_request_success(partial_success, output)
+
+func _resume_agent_loop(user_reply: String, provider_id: String, options: Dictionary) -> void:
+	_agent_paused = false
+	_agent_pause_question = ""
+	_cancel_requested = false
+	_is_processing = true
+	_pending_provider_id = provider_id
+	_pending_enable_tools = bool(options.get("enable_tools", config_manager.get_setting("enable_editor_tools", true)))
+	_pending_options = options
+	if _looks_like_continue_reply(user_reply):
+		var extension: int = int(config_manager.get_setting("agent_step_extension", 12))
+		_agent_max_steps += maxi(extension, 1)
+	_agent_messages.append({"role": "user", "content": user_reply.strip_edges() + _language_hint_suffix()})
+	agent_step_update.emit(_agent_step, _agent_max_steps, "Reanudando agente…")
+	_send_agent_request()
+
 func _finish_agent_loop(success: bool, text: String) -> void:
 	_reset_agent_state()
 	_handle_request_success(success, text)
 
 func _reset_agent_state() -> void:
 	_agent_active = false
+	_agent_paused = false
+	_agent_pause_question = ""
 	_agent_step = 0
 	_agent_stall_count = 0
 	_agent_last_response_signature = ""
 	_agent_failed_batches = 0
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
+	_agent_model_tool_batches = 0
 	_agent_code_only = false
 	_agent_read_only_streak = 0
 	_agent_messages.clear()
@@ -1061,6 +1172,73 @@ func _response_has_tool_calls(text: String) -> bool:
 		return true
 	regex.compile("\\{\\s*\"tool\"\\s*:\\s*\"[^\"]+\"\\s*,\\s*\"params\"\\s*:")
 	return regex.search(text) != null
+
+func _tool_source_text(parsed: Dictionary, content: String, raw_text: String) -> String:
+	# Parse tools from the full model payload (thinking tags may strip them from content).
+	# Parsear tools del payload completo (los tags thinking pueden quitarlos del content).
+	var raw: String = String(parsed.get("raw", raw_text)).strip_edges()
+	if not raw.is_empty():
+		return raw
+	if not content.strip_edges().is_empty():
+		return content
+	return raw_text.strip_edges()
+
+func _bootstrap_agent_context(user_prompt: String) -> String:
+	if editor_tools == null or _agent_code_only:
+		return ""
+	var lower: String = user_prompt.to_lower()
+	var keywords: PackedStringArray = [
+		"mapa", "piso", "pisos", "mundo", "scenebuilder", "scene builder", "pared",
+		"floor_", "edificio", "escalera", "stairs", "constru", "build", "coloca",
+	]
+	var relevant: bool = false
+	for keyword in keywords:
+		if lower.contains(keyword):
+			relevant = true
+			break
+	if not relevant:
+		return ""
+	var tool_results: Array = []
+	var catalog: Dictionary = editor_tools.execute_tool(
+		"list_scene_builder_catalog",
+		{"path": "res://Data/SceneBuilder"}
+	)
+	tool_results.append({"tool": "list_scene_builder_catalog", "result": catalog})
+	var snapshot: Dictionary = editor_tools.execute_tool("get_scene_snapshot", {"max_depth": 4})
+	tool_results.append({"tool": "get_scene_snapshot", "result": snapshot})
+	var ok_count: int = 0
+	for entry in tool_results:
+		if entry is Dictionary and bool(entry.get("result", {}).get("ok", false)):
+			ok_count += 1
+	_agent_tools_executed += ok_count
+	var compact: String = (
+		editor_tools.compact_tool_results_for_context(tool_results)
+		if editor_tools else JSON.stringify(tool_results, "\t")
+	)
+	if _active_user_language == "es":
+		return (
+			"Contexto precargado (NO vuelvas a listar el proyecto entero). "
+			+ "Usa estos datos y EMPIEZA a colocar assets con place_scene_builder_item o instance_scene:\n"
+			+ compact
+		)
+	return (
+		"Preloaded context (do NOT re-list the whole project). "
+		+ "Use this data and START placing assets with place_scene_builder_item or instance_scene:\n"
+		+ compact
+	)
+
+func _response_is_narration_only(content: String, parsed: Dictionary) -> bool:
+	var visible: String = _visible_response_text(content, parsed).to_lower()
+	if visible.is_empty():
+		return true
+	var markers: PackedStringArray = [
+		"voy a ", "let me ", "i will ", "i'll ", "empezar", "explorar", "explore",
+		"primero", "first i", "esta vez", "this time", "correctamente",
+	]
+	for marker in markers:
+		if visible.contains(marker):
+			return true
+	return false
 
 func _ollama_supports_thinking(model_name: String) -> bool:
 	return ModelCapabilities.supports_thinking("ollama", model_name)
@@ -1162,25 +1340,31 @@ func _user_wants_code_only(prompt: String) -> bool:
 func _response_has_code_block(text: String) -> bool:
 	return text.contains("```gdscript") or text.contains("```csharp")
 
-func _act_now_nudge() -> String:
+func _act_now_nudge(force_example: bool = false) -> String:
 	# Force the model to perform real edits instead of only inspecting/summarizing.
 	# Forzar al modelo a hacer cambios reales en lugar de solo inspeccionar/resumir.
+	var example: String = (
+		"\n\nEjemplo válido (copia el formato, NO dejes <tool_call></tool_call> vacío):\n"
+		+ "<tool_call>{\"tool\":\"place_scene_builder_item\",\"params\":{"
+		+ "\"item_path\":\"res://Data/SceneBuilder/Wall/Wall_08.tres\","
+		+ "\"parent_node_path\":\"Floor_1_exit\",\"node_name\":\"Wall_n1\","
+		+ "\"position\":[0,0,0],\"scale\":[100,100,100]}}</tool_call>"
+	)
 	if _active_user_language == "es":
-		return (
-			"Todavía NO has hecho ningún cambio en la escena. No repitas get_scene_snapshot + get_scene_tree + inspect_node. "
-			+ "NO preguntes al usuario por InputMap, grupos o errores: usa get_input_map, get_scene_groups, get_runtime_errors o get_script_errors. "
-			+ "Si la tarea es un script, llama create_script AHORA con attach_to y content completo. "
-			+ "Después llama get_script_errors para verificar parse/compile. "
-			+ "Si el usuario pidió solo código, responde con un bloque ```gdscript. "
-			+ "Usa exactamente el formato <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
+		var msg := (
+			"Todavía NO has ejecutado tools válidas. NO narres el plan — EMITE <tool_call> con JSON ahora. "
+			+ "NO repitas list_project_files desde res://. Usa el contexto precargado o find_project_paths. "
+			+ "Para mapas: place_scene_builder_item / instance_scene. "
+			+ "Formato exacto: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
 		)
+		return msg + (example if force_example else "")
 	return (
-		"You have NOT made any scene changes yet. Do not repeat get_scene_snapshot + get_scene_tree + inspect_node. "
-		+ "Do NOT ask the user for InputMap actions, groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors. "
-		+ "For scripts, call create_script NOW with attach_to and full content, then get_script_errors to verify. "
-		+ "If the user wanted code only, reply with a ```gdscript block. "
-		+ "Use exactly the format <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
-		)
+		"You have NOT executed valid tools yet. Do NOT narrate — EMIT <tool_call> JSON now. "
+		+ "Do NOT repeat list_project_files from res://. Use preloaded context or find_project_paths. "
+		+ "For maps: place_scene_builder_item / instance_scene. "
+		+ "Exact format: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
+		+ (example if force_example else "")
+	)
 
 func _detect_language(text: String) -> String:
 	var lower: String = text.to_lower()

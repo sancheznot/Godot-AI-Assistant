@@ -97,6 +97,8 @@
 	"ui.status_querying_model": "Consultando %s · %s…",
 	"ui.status_agent_step": "Paso agente %d/%d: %s",
 	"ui.agent_step_updated": "Paso %d/%d actualizado · esperando siguiente respuesta…",
+	"ui.agent_paused_status": "Agente en pausa — responde abajo para continuar",
+	"ui.agent_paused_placeholder": "Responde la pregunta del agente o escribe «continuar»…",
 	"ui.copy": "Copiar",
 	"ui.copied": "¡Copiado!",
 	"ui.copy_tooltip": "Copiar este mensaje al portapapeles",
