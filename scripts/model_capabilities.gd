@@ -9,7 +9,6 @@ const VISION_POSITIVE: PackedStringArray = [
 	"gemini", "kimik2", "kimiv", "qwen2vl", "qwenvl", "qwen3vl",
 	"qwen35", "qwen36", "qwen37",
 	"glm4v", "deepseekvl", "janus", "bakllava", "llama32vision",
-	"minimaxvl",
 ]
 
 const VISION_NEGATIVE: PackedStringArray = [
@@ -20,7 +19,7 @@ const VISION_NEGATIVE: PackedStringArray = [
 
 const THINKING_POSITIVE: PackedStringArray = [
 	"gemma4", "gemma3", "qwen3", "qwen35", "qwen36", "qwen37", "qwq", "deepseekr1", "deepseekreasoner", "gptoss",
-	"magistral", "kimik2thinking", "minimaxm2", "o1", "o3", "o4", "composer",
+	"magistral", "kimik2thinking", "o1", "o3", "o4", "composer",
 ]
 
 const THINKING_NEGATIVE: PackedStringArray = [
@@ -45,7 +44,7 @@ static func supports_vision(provider_id: String, model_id: String) -> bool:
 		"kimi":
 			return _contains_any(keys, ["kimik2", "vision"])
 		"minimax":
-			return _contains_any(keys, ["vl", "minimaxvl"])
+			return _minimax_supports_vision(model_id)
 		"cursor":
 			return _cursor_supports_vision(keys)
 		"openrouter", "lmstudio":
@@ -67,7 +66,65 @@ static func supports_thinking(provider_id: String, model_id: String) -> bool:
 		return true
 	if provider_id == "cursor":
 		return _cursor_supports_thinking(keys)
+	if provider_id == "minimax":
+		return _minimax_supports_thinking(model_id)
 	return false
+
+# MiniMax official matrix (platform.minimax.io/docs, Anthropic-compatible API):
+# - Vision (image/video): MiniMax-M3 ONLY
+# - Thinking: M3 (toggleable), M2.7/M2.5/M2.1/M2 (always on at API level)
+# - M2-her: dialogue model, text only, no multimodal
+static func _minimax_supports_vision(model_id: String) -> bool:
+	return _minimax_model_tier(model_id) == "m3"
+
+static func _minimax_supports_thinking(model_id: String) -> bool:
+	var tier: String = _minimax_model_tier(model_id)
+	if tier.is_empty() or tier == "m2her":
+		return false
+	return tier in ["m3", "m27", "m25", "m21", "m2"]
+
+static func _minimax_model_tier(model_id: String) -> String:
+	var keys: Dictionary = _model_match_keys(model_id)
+	if keys.is_empty():
+		return ""
+	var compact: String = keys["compact"]
+	if compact == "minimaxm3" or compact.ends_with("minimaxm3"):
+		return "m3"
+	if compact.contains("m2her") or compact == "m2her":
+		return "m2her"
+	if compact.contains("minimaxm27") or compact.contains("m27highspeed"):
+		return "m27"
+	if compact.contains("minimaxm25") or compact.contains("m25highspeed"):
+		return "m25"
+	if compact.contains("minimaxm21") or compact.contains("m21highspeed"):
+		return "m21"
+	if compact.contains("minimaxm2") and not compact.contains("minimaxm21") and not compact.contains("minimaxm25") and not compact.contains("minimaxm27"):
+		return "m2"
+	if keys["raw"].begins_with("minimax-m3"):
+		return "m3"
+	if keys["raw"].begins_with("minimax-m2.7") or keys["raw"].begins_with("minimax-m2-7"):
+		return "m27"
+	if keys["raw"].begins_with("minimax-m2.5") or keys["raw"].begins_with("minimax-m2-5"):
+		return "m25"
+	if keys["raw"].begins_with("minimax-m2.1") or keys["raw"].begins_with("minimax-m2-1"):
+		return "m21"
+	if keys["raw"].begins_with("minimax-m2"):
+		return "m2"
+	return ""
+
+static func get_minimax_capability_table() -> Array:
+	# Reference table for docs / UI hints / Referencia para documentación
+	return [
+		{"model": "MiniMax-M3", "vision": true, "thinking": true, "thinking_notes": "toggleable (disabled/adaptive)"},
+		{"model": "MiniMax-M2.7", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2.7-highspeed", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2.5", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2.5-highspeed", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2.1", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2.1-highspeed", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "MiniMax-M2", "vision": false, "thinking": true, "thinking_notes": "always on (API)"},
+		{"model": "M2-her", "vision": false, "thinking": false, "thinking_notes": "dialogue / roleplay"},
+	]
 
 static func _model_match_keys(model_id: String) -> Dictionary:
 	var raw: String = model_id.strip_edges().to_lower()

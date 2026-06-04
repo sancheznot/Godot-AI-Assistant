@@ -65,6 +65,12 @@ Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License
   <img src="docs/preview_autocomplete.jpg" alt="Golem-AI history panel and @ mention autocomplete" width="520">
 </p>
 
+**Models & providers** — one dropdown with local and cloud models grouped by provider (Ollama, LM Studio, MiniMax, Cursor, OpenRouter, Kimi, OpenAI, Anthropic, Gemini).
+
+<p align="center">
+  <img src="docs/preview_models.jpg" alt="Golem-AI model selector with Ollama, LM Studio, MiniMax and Cursor providers" width="520">
+</p>
+
 ---
 
 ## Features
@@ -85,7 +91,7 @@ Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License
 | **LM Studio** | Local server; reads `capabilities.vision` from native API |
 | **OpenRouter** | Many cloud models, pay-as-you-go |
 | **Kimi** | Moonshot AI |
-| **MiniMax** | Cost-effective API |
+| **MiniMax** | M3 = visión + thinking; M2.x = solo texto + thinking (sin imágenes) |
 | **OpenAI** | Cloud API |
 | **Anthropic** | Cloud API |
 | **Gemini** | Google API |
@@ -94,6 +100,21 @@ Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License
 - Model dropdown grouped by **provider separators**
 - **↻ Refresh** loads models from each enabled provider
 - Capability detection (`model_capabilities.gd`) + provider metadata (LM Studio / OpenRouter) to avoid invalid vision/thinking options
+
+#### MiniMax models (official API)
+
+Source: [MiniMax models](https://platform.minimax.io/docs/guides/models-intro) · [Anthropic-compatible API](https://platform.minimax.io/docs/api-reference/text-anthropic-api)
+
+| Model | Vision (images) | Thinking |
+|-------|-----------------|----------|
+| **MiniMax-M3** | Yes (image + video) | Yes (toggle `disabled` / `adaptive`) |
+| MiniMax-M2.7 / highspeed | No | Yes (always on at API) |
+| MiniMax-M2.5 / highspeed | No | Yes (always on at API) |
+| MiniMax-M2.1 / highspeed | No | Yes (always on at API) |
+| MiniMax-M2 | No | Yes (always on at API) |
+| M2-her | No | No (dialogue / roleplay) |
+
+Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax chat models are **text + tools only**.
 
 ### Agent & tools
 
@@ -209,6 +230,9 @@ Chat history is saved under `user://ai_assistant_plugin/chat_history.json`.
 ai_assistant_plugin/
 ├── icon.png
 ├── docs/                      # AssetLib previews
+│   ├── preview_dock.jpg
+│   ├── preview_autocomplete.jpg
+│   └── preview_models.jpg
 ├── plugin.cfg
 ├── config/
 ├── harness/                   # System prompt layers
@@ -254,11 +278,11 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 
 - **Adjuntos**: archivos de texto e imágenes en el compositor (📎 / 🖼)
 - **Visión y Think**: toggles inteligentes según capacidades del modelo (Gemma, Qwen 3.6, Composer, LM Studio, etc.)
-- **Proveedores**: OpenRouter, Kimi, MiniMax
+- **Proveedores**: OpenRouter, Kimi, MiniMax (visión solo en **MiniMax-M3**)
 - **Historial**: selección múltiple, archivar/restaurar/eliminar en lote, confirmación al borrar
 - **UI**: bloques colapsables (thinking, tools, código) con botón copiar; modelos agrupados por proveedor
 - **Agente**: respuestas más rápidas, menos inspección redundante, resultados de tools compactos
 
 Instalación: copia la carpeta a `addons/ai_assistant_plugin`, activa el plugin en Ajustes del proyecto y configura un proveedor desde **Config** en el dock.
 
-Capturas: ver sección **Screenshots** arriba.
+Capturas: ver sección **Screenshots** arriba (dock, historial con `@`, selector de modelos).

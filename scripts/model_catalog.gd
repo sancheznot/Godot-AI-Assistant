@@ -16,8 +16,11 @@ var _current_job: Dictionary = {}
 var _is_refreshing: bool = false
 
 const MINIMAX_KNOWN_MODELS: Array[String] = [
-	"MiniMax-M2.5",
 	"MiniMax-M3",
+	"MiniMax-M2.7",
+	"MiniMax-M2.7-highspeed",
+	"MiniMax-M2.5",
+	"MiniMax-M2.5-highspeed",
 	"MiniMax-M2.1",
 	"MiniMax-M2.1-highspeed",
 	"MiniMax-M2",
