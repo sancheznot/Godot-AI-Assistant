@@ -3,6 +3,7 @@ extends Window
 # Configuration dialog for providers and assistant settings / Diálogo de configuración
 
 signal configuration_saved
+signal skill_installed(skill_id: String)
 
 const COLOR_BG := Color(0.09, 0.09, 0.1, 1.0)
 const COLOR_PANEL := Color(0.12, 0.12, 0.13, 1.0)
@@ -19,21 +20,44 @@ const COLOR_INPUT := Color(0.08, 0.08, 0.09, 1.0)
 var config_manager: RefCounted = null
 var model_catalog: RefCounted = null
 var locale_manager: RefCounted = null
+var skills_manager: RefCounted = null
+var skills_catalog: RefCounted = null
 var provider_sections: Dictionary = {}
+var _skills_list_vbox: VBoxContainer = null
+var _skills_installed_vbox: VBoxContainer = null
+var _skills_status_label: Label = null
+var _skills_search_edit: LineEdit = null
+var _skills_search_button: Button = null
+var _remote_skill_results: Array = []
 
-func setup(config_mgr: RefCounted, catalog: RefCounted = null, locale_mgr: RefCounted = null) -> void:
+func setup(
+	config_mgr: RefCounted,
+	catalog: RefCounted = null,
+	locale_mgr: RefCounted = null,
+	skills_mgr: RefCounted = null
+) -> void:
 	config_manager = config_mgr
 	model_catalog = catalog
 	locale_manager = locale_mgr
+	skills_manager = skills_mgr
+	if skills_catalog == null:
+		skills_catalog = preload("res://addons/ai_assistant_plugin/scripts/skills_catalog_client.gd").new()
+		skills_catalog.setup(self)
+		skills_catalog.search_completed.connect(_on_skills_search_completed)
+		skills_catalog.search_failed.connect(_on_skills_search_failed)
+		skills_catalog.download_completed.connect(_on_skill_download_completed)
+		skills_catalog.download_failed.connect(_on_skill_download_failed)
 	title = _tr("config.title")
-	min_size = Vector2i(680, 560)
-	size = Vector2i(720, 620)
+	min_size = Vector2i(720, 620)
+	size = Vector2i(760, 680)
 	unresizable = false
 	close_requested.connect(hide)
 	_build_ui()
 
 func _build_ui() -> void:
 	for child in get_children():
+		if child is HTTPRequest:
+			continue
 		child.queue_free()
 	provider_sections.clear()
 	
@@ -53,23 +77,40 @@ func _build_ui() -> void:
 	
 	shell.add_child(_make_header())
 	
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	shell.add_child(scroll)
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	shell.add_child(tabs)
 	
-	var content := VBoxContainer.new()
-	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.add_theme_constant_override("separation", 12)
-	scroll.add_child(content)
+	var general_scroll := ScrollContainer.new()
+	general_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	general_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	general_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var general_content := VBoxContainer.new()
+	general_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	general_content.add_theme_constant_override("separation", 12)
+	general_scroll.add_child(general_content)
+	general_content.add_child(_make_section_header(_tr("config.general"), _tr("config.general_hint")))
+	general_content.add_child(_make_settings_section())
+	tabs.add_child(general_scroll)
+	tabs.set_tab_title(general_scroll.get_index(), _tr("config.general"))
 	
-	content.add_child(_make_section_header(_tr("config.general"), _tr("config.general_hint")))
-	content.add_child(_make_settings_section())
-	content.add_child(_make_section_header(_tr("config.providers"), _tr("config.providers_hint")))
+	tabs.add_child(_make_skills_tab())
+	tabs.set_tab_title(tabs.get_tab_count() - 1, _tr("config.skills"))
 	
+	var providers_scroll := ScrollContainer.new()
+	providers_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	providers_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	providers_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var providers_content := VBoxContainer.new()
+	providers_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	providers_content.add_theme_constant_override("separation", 12)
+	providers_scroll.add_child(providers_content)
+	providers_content.add_child(_make_section_header(_tr("config.providers"), _tr("config.providers_hint")))
 	for provider_id in config_manager.PROVIDER_IDS:
-		content.add_child(_make_provider_section(provider_id))
+		providers_content.add_child(_make_provider_section(provider_id))
+	tabs.add_child(providers_scroll)
+	tabs.set_tab_title(providers_scroll.get_index(), _tr("config.providers"))
 	
 	shell.add_child(_make_footer())
 
@@ -230,6 +271,223 @@ func _make_settings_section() -> PanelContainer:
 	
 	provider_sections["_settings"] = grid
 	return panel
+
+func _make_skills_tab() -> Control:
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", 10)
+	
+	root.add_child(_make_section_header(_tr("config.skills"), _tr("config.skills_hint")))
+	
+	var installed_panel := PanelContainer.new()
+	installed_panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL_INNER, 8))
+	var installed_box := VBoxContainer.new()
+	installed_box.add_theme_constant_override("separation", 6)
+	installed_panel.add_child(installed_box)
+	var installed_title := Label.new()
+	installed_title.text = _tr("config.skills_installed")
+	installed_title.add_theme_font_size_override("font_size", 13)
+	installed_title.add_theme_color_override("font_color", COLOR_TEXT)
+	installed_box.add_child(installed_title)
+	_skills_installed_vbox = VBoxContainer.new()
+	_skills_installed_vbox.add_theme_constant_override("separation", 4)
+	installed_box.add_child(_skills_installed_vbox)
+	root.add_child(installed_panel)
+	
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation", 8)
+	_skills_search_edit = LineEdit.new()
+	_skills_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_skills_search_edit.custom_minimum_size = Vector2(0, 30)
+	_skills_search_edit.placeholder_text = _tr("config.skills_search_placeholder")
+	_skills_search_edit.text = "godot"
+	_style_line_edit(_skills_search_edit)
+	_skills_search_edit.text_submitted.connect(func(_text: String) -> void: _run_skills_search())
+	search_row.add_child(_skills_search_edit)
+	_skills_search_button = Button.new()
+	_skills_search_button.text = _tr("config.skills_search")
+	_skills_search_button.custom_minimum_size = Vector2(96, 30)
+	_style_button(_skills_search_button, true)
+	_skills_search_button.pressed.connect(_run_skills_search)
+	search_row.add_child(_skills_search_button)
+	root.add_child(search_row)
+	
+	_skills_status_label = Label.new()
+	_skills_status_label.text = _tr("config.skills_search_hint")
+	_skills_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_skills_status_label.add_theme_font_size_override("font_size", 11)
+	_skills_status_label.add_theme_color_override("font_color", COLOR_MUTED)
+	root.add_child(_skills_status_label)
+	
+	var catalog_scroll := ScrollContainer.new()
+	catalog_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	catalog_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	catalog_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_skills_list_vbox = VBoxContainer.new()
+	_skills_list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_skills_list_vbox.add_theme_constant_override("separation", 6)
+	catalog_scroll.add_child(_skills_list_vbox)
+	root.add_child(catalog_scroll)
+	
+	_refresh_installed_skills_list()
+	call_deferred("_run_skills_search")
+	return root
+
+func _get_skills_path() -> String:
+	if skills_manager:
+		return skills_manager.get_skills_path_from_config(config_manager)
+	return String(config_manager.get_setting("skills_path", "res://addons/ai_assistant_plugin/skills"))
+
+func _refresh_installed_skills_list() -> void:
+	if _skills_installed_vbox == null or skills_manager == null:
+		return
+	var skills_path: String = _get_skills_path()
+	skills_manager.load_skills(skills_path, skills_manager.active_skill_id)
+	for child in _skills_installed_vbox.get_children():
+		child.queue_free()
+	var installed_ids: Array = skills_manager.get_installed_skill_ids(_get_skills_path())
+	if installed_ids.is_empty():
+		var empty := Label.new()
+		empty.text = _tr("config.skills_installed_empty")
+		empty.add_theme_font_size_override("font_size", 11)
+		empty.add_theme_color_override("font_color", COLOR_MUTED)
+		_skills_installed_vbox.add_child(empty)
+		return
+	for skill_id in installed_ids:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var label := Label.new()
+		label.text = skills_manager.get_skill_label(String(skill_id))
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label.add_theme_font_size_override("font_size", 12)
+		label.add_theme_color_override("font_color", COLOR_TEXT)
+		row.add_child(label)
+		if String(skill_id) == skills_manager.active_skill_id:
+			var active_badge := Label.new()
+			active_badge.text = _tr("config.skills_active")
+			active_badge.add_theme_font_size_override("font_size", 11)
+			active_badge.add_theme_color_override("font_color", Color(0.45, 0.85, 0.55, 1.0))
+			row.add_child(active_badge)
+		_skills_installed_vbox.add_child(row)
+
+func _run_skills_search() -> void:
+	if skills_catalog == null or _skills_search_edit == null:
+		return
+	var query: String = _skills_search_edit.text.strip_edges()
+	if query.length() < 2:
+		_skills_status_label.text = _tr("config.skills_query_short")
+		return
+	_skills_status_label.text = _tr("config.skills_searching")
+	_skills_search_button.disabled = true
+	skills_catalog.search(query, 40)
+
+func _render_remote_skills(results: Array) -> void:
+	if _skills_list_vbox == null:
+		return
+	for child in _skills_list_vbox.get_children():
+		child.queue_free()
+	_remote_skill_results = results
+	if results.is_empty():
+		var empty := Label.new()
+		empty.text = _tr("config.skills_no_results")
+		empty.add_theme_font_size_override("font_size", 12)
+		empty.add_theme_color_override("font_color", COLOR_MUTED)
+		_skills_list_vbox.add_child(empty)
+		return
+	var skills_path: String = _get_skills_path()
+	for index in results.size():
+		var skill: Dictionary = results[index] if results[index] is Dictionary else {}
+		if skill.is_empty():
+			continue
+		var skill_id: String = String(skill.get("skillId", skill.get("slug", skill.get("name", ""))))
+		var source: String = String(skill.get("source", ""))
+		var installs: int = int(skill.get("installs", 0))
+		var display_name: String = String(skill.get("name", skill_id))
+		var installed: bool = skills_manager.is_skill_installed(skills_path, skill_id)
+		var row_panel := PanelContainer.new()
+		row_panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL_INNER, 6))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		row_panel.add_child(row)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_theme_constant_override("separation", 2)
+		row.add_child(info)
+		var title := Label.new()
+		title.text = display_name
+		title.add_theme_font_size_override("font_size", 13)
+		title.add_theme_color_override("font_color", COLOR_TEXT)
+		info.add_child(title)
+		var meta := Label.new()
+		meta.text = "%s · %s" % [source, _tr("config.skills_installs", [installs])]
+		meta.add_theme_font_size_override("font_size", 11)
+		meta.add_theme_color_override("font_color", COLOR_MUTED)
+		info.add_child(meta)
+		if installed:
+			var badge := Label.new()
+			badge.text = _tr("config.skills_installed_badge")
+			badge.add_theme_font_size_override("font_size", 11)
+			badge.add_theme_color_override("font_color", Color(0.45, 0.85, 0.55, 1.0))
+			row.add_child(badge)
+		else:
+			var install_btn := Button.new()
+			install_btn.text = _tr("config.skills_install")
+			install_btn.custom_minimum_size = Vector2(88, 28)
+			_style_button(install_btn, true)
+			install_btn.pressed.connect(_on_install_skill_pressed.bind(index))
+			row.add_child(install_btn)
+		_skills_list_vbox.add_child(row_panel)
+
+func _on_install_skill_pressed(result_index: int) -> void:
+	if skills_catalog == null or skills_manager == null:
+		return
+	if result_index < 0 or result_index >= _remote_skill_results.size():
+		return
+	var skill: Dictionary = _remote_skill_results[result_index]
+	var skill_id: String = String(skill.get("skillId", skill.get("slug", skill.get("name", ""))))
+	var source: String = String(skill.get("source", ""))
+	if skill_id.is_empty() or source.is_empty():
+		return
+	_skills_status_label.text = _tr("config.skills_downloading", [skill_id])
+	skills_catalog.download_skill(source, skill_id)
+
+func _on_skills_search_completed(results: Array, _query: String) -> void:
+	if _skills_search_button:
+		_skills_search_button.disabled = false
+	if _skills_status_label:
+		_skills_status_label.text = _tr("config.skills_results", [results.size()])
+	_render_remote_skills(results)
+
+func _on_skills_search_failed(error_message: String) -> void:
+	if _skills_search_button:
+		_skills_search_button.disabled = false
+	if _skills_status_label:
+		if error_message == "query_too_short":
+			_skills_status_label.text = _tr("config.skills_query_short")
+		elif error_message == "busy":
+			_skills_status_label.text = _tr("config.skills_busy")
+		else:
+			_skills_status_label.text = _tr("config.skills_search_failed", [error_message])
+
+func _on_skill_download_completed(skill_id: String, content: String, _metadata: Dictionary) -> void:
+	if skills_manager == null:
+		return
+	var skills_path: String = _get_skills_path()
+	if skills_manager.install_skill_file(skills_path, skill_id, content, true):
+		config_manager.set_setting("active_skill", skills_manager.active_skill_id)
+		config_manager.set_setting("skills_path", skills_path)
+		config_manager.save_config()
+		_refresh_installed_skills_list()
+		_render_remote_skills(_remote_skill_results)
+		_skills_status_label.text = _tr("config.skills_installed_ok", [skill_id])
+		skill_installed.emit(skills_manager.active_skill_id)
+	else:
+		_skills_status_label.text = _tr("config.skills_install_failed", [skill_id])
+
+func _on_skill_download_failed(skill_id: String, error_message: String) -> void:
+	if _skills_status_label:
+		_skills_status_label.text = _tr("config.skills_download_failed", [skill_id, error_message])
 
 func _make_provider_section(provider_id: String) -> PanelContainer:
 	var panel := PanelContainer.new()

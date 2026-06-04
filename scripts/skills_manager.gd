@@ -30,8 +30,71 @@ func load_skills(skills_path: String, active_skill: String = "") -> void:
 	
 	if active_skill.is_empty() and not skills.is_empty():
 		active_skill_id = skills.keys()[0]
-	else:
+	elif skills.has(active_skill):
 		active_skill_id = active_skill
+	elif not skills.is_empty():
+		active_skill_id = skills.keys()[0]
+	else:
+		active_skill_id = ""
+
+func get_skills_path_from_config(config_manager: RefCounted) -> String:
+	if config_manager:
+		return String(config_manager.get_setting("skills_path", "res://addons/ai_assistant_plugin/skills"))
+	return "res://addons/ai_assistant_plugin/skills"
+
+func is_skill_installed(skills_path: String, skill_id: String) -> bool:
+	return FileAccess.file_exists("%s/%s.md" % [skills_path, skill_id])
+
+func get_installed_skill_ids(skills_path: String) -> Array:
+	var ids: Array = []
+	var dir := DirAccess.open(skills_path)
+	if dir == null:
+		return ids
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir() and entry.ends_with(".md"):
+			ids.append(entry.get_basename())
+		entry = dir.get_next()
+	dir.list_dir_end()
+	ids.sort()
+	return ids
+
+func install_skill_file(skills_path: String, skill_id: String, content: String, make_active: bool = false) -> bool:
+	var safe_id: String = _sanitize_skill_id(skill_id)
+	if safe_id.is_empty() or content.strip_edges().is_empty():
+		return false
+	_ensure_skills_dir(skills_path)
+	var target_path: String = "%s/%s.md" % [skills_path, safe_id]
+	var file := FileAccess.open(target_path, FileAccess.WRITE)
+	if file == null:
+		push_warning("AI Assistant: could not write skill to %s" % target_path)
+		return false
+	file.store_string(content)
+	file.close()
+	skills[safe_id] = {
+		"id": safe_id,
+		"name": _humanize_skill_name(safe_id),
+		"content": content
+	}
+	if make_active or active_skill_id.is_empty():
+		active_skill_id = safe_id
+	return true
+
+func _sanitize_skill_id(raw_id: String) -> String:
+	var clean: String = raw_id.strip_edges().to_lower()
+	clean = clean.replace(" ", "-").replace("/", "-")
+	var regex := RegEx.new()
+	regex.compile("[^a-z0-9_-]")
+	clean = regex.sub(clean, "-", true)
+	while "--" in clean:
+		clean = clean.replace("--", "-")
+	return clean.trim_prefix("-").trim_suffix("-")
+
+func _ensure_skills_dir(skills_path: String) -> void:
+	if DirAccess.dir_exists_absolute(skills_path):
+		return
+	DirAccess.make_dir_recursive_absolute(skills_path)
 
 func get_skill_ids() -> Array:
 	return skills.keys()

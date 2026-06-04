@@ -3,11 +3,13 @@ extends RefCounted
 # Resolves @mentions and project file search / Resuelve menciones @ y búsqueda de archivos
 
 const MAX_ATTACHMENT_CHARS := 6000
+const MAX_FOLDER_FILES := 40
 const INDEX_EXTENSIONS := [".gd", ".tscn", ".cs", ".md", ".json", ".cfg", ".tres", ".import"]
 
 var project_context: RefCounted = null
 var skills_manager: RefCounted = null
 var _file_index: Array = []
+var _folder_index: Array = []
 
 func setup(context_builder: RefCounted, skills: RefCounted) -> void:
 	project_context = context_builder
@@ -16,6 +18,7 @@ func setup(context_builder: RefCounted, skills: RefCounted) -> void:
 
 func rebuild_index() -> void:
 	_file_index.clear()
+	_folder_index.clear()
 	_scan_directory("res://")
 
 func search(query: String, locale_manager: RefCounted = null, limit: int = 24) -> Array:
@@ -25,6 +28,15 @@ func search(query: String, locale_manager: RefCounted = null, limit: int = 24) -
 		results.append_array(_context_mentions(locale_manager))
 	if skills_manager and (normalized.is_empty() or normalized.begins_with("skill") or normalized.begins_with("sk")):
 		results.append_array(_skill_mentions(normalized))
+	if normalized.is_empty() or normalized.begins_with("fol") or normalized.ends_with("/"):
+		for entry in _folder_index:
+			if results.size() >= limit:
+				break
+			if entry is Dictionary:
+				var path: String = String(entry.get("path", ""))
+				var label: String = String(entry.get("label", path))
+				if normalized.is_empty() or normalized in path.to_lower() or normalized in label.to_lower():
+					results.append(_folder_entry(entry, locale_manager))
 	for entry in _file_index:
 		if results.size() >= limit:
 			break
@@ -79,8 +91,20 @@ func _file_entry(entry: Dictionary, locale_manager: RefCounted) -> Dictionary:
 		"path": path
 	}
 
+func _folder_entry(entry: Dictionary, locale_manager: RefCounted) -> Dictionary:
+	var path: String = String(entry.get("path", ""))
+	return {
+		"category": "folders",
+		"insert": String(entry.get("insert", "@%s/" % path)),
+		"title": String(entry.get("label", path.replace("res://", "") + "/")),
+		"description": _L(locale_manager, "ac.mention.folder", "Attach folder contents summary"),
+		"kind": "mention",
+		"path": path,
+		"is_folder": true
+	}
+
 func _sort_and_limit(results: Array, limit: int) -> Array:
-	var order: Dictionary = {"context": 0, "skills": 1, "scenes": 2, "scripts": 3, "files": 4}
+	var order: Dictionary = {"context": 0, "skills": 1, "folders": 2, "scenes": 3, "scripts": 4, "files": 5}
 	results.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		var ca: int = int(order.get(String(a.get("category", "files")), 9))
 		var cb: int = int(order.get(String(b.get("category", "files")), 9))
@@ -161,11 +185,22 @@ func _resolve_token(token: String) -> String:
 		_:
 			if token.begins_with("@skill:"):
 				return _resolve_skill(token.substr(7))
-			if token.begins_with("@res://"):
-				return _resolve_file(token.substr(1))
-			if token.begins_with("@"):
-				return _resolve_file("res://" + token.substr(1))
+			var path: String = _token_to_path(token)
+			if path.is_empty():
+				return ""
+			if _is_directory(path):
+				return _resolve_folder(path)
+			return _resolve_file(path)
+
+func _token_to_path(token: String) -> String:
+	if token.begins_with("@res://"):
+		return token.substr(1).trim_suffix("/")
+	if token.begins_with("@"):
+		return ("res://" + token.substr(1)).trim_suffix("/")
 	return ""
+
+func _is_directory(path: String) -> bool:
+	return DirAccess.dir_exists_absolute(path)
 
 func _resolve_current_scene() -> String:
 	if project_context == null or not project_context.has_method("get_current_scene_summary"):
@@ -201,6 +236,42 @@ func _resolve_file(path: String) -> String:
 		return "## Attached scene: %s\nUse editor tools to inspect nodes. Path: %s" % [path, path]
 	return "## Attached file: %s\n%s" % [path, text.substr(0, MAX_ATTACHMENT_CHARS)]
 
+func _resolve_folder(path: String) -> String:
+	if not _is_directory(path):
+		return "## %s\nFolder not found." % path
+	var listing: PackedStringArray = _collect_folder_listing(path, MAX_FOLDER_FILES)
+	if listing.is_empty():
+		return "## @folder %s\n(empty folder)" % path
+	var body: String = "\n".join(listing)
+	if body.length() > MAX_ATTACHMENT_CHARS:
+		body = body.substr(0, MAX_ATTACHMENT_CHARS) + "\n...(truncated)"
+	return "## @folder %s\nFiles in folder:\n%s" % [path, body]
+
+func _collect_folder_listing(path: String, max_items: int) -> PackedStringArray:
+	var lines: PackedStringArray = []
+	_collect_folder_listing_recursive(path, path, lines, max_items)
+	return lines
+
+func _collect_folder_listing_recursive(root: String, path: String, lines: PackedStringArray, max_items: int) -> void:
+	if lines.size() >= max_items:
+		return
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry: String = dir.get_next()
+	while entry != "" and lines.size() < max_items:
+		if entry != "." and entry != "..":
+			var full_path: String = path.path_join(entry)
+			if dir.current_is_dir():
+				if not entry.begins_with("."):
+					lines.append("%s/" % full_path.replace("res://", ""))
+					_collect_folder_listing_recursive(root, full_path, lines, max_items)
+			else:
+				lines.append(full_path.replace("res://", ""))
+		entry = dir.get_next()
+	dir.list_dir_end()
+
 func _scan_directory(path: String) -> void:
 	var dir := DirAccess.open(path)
 	if dir == null:
@@ -212,6 +283,12 @@ func _scan_directory(path: String) -> void:
 			var full_path: String = path.path_join(entry)
 			if dir.current_is_dir():
 				if not entry.begins_with("."):
+					_folder_index.append({
+						"kind": "folder",
+						"path": full_path,
+						"label": full_path.replace("res://", "") + "/",
+						"insert": "@%s/" % full_path
+					})
 					_scan_directory(full_path)
 			else:
 				for ext in INDEX_EXTENSIONS:

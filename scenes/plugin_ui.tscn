@@ -82,13 +82,14 @@ text = "⋯"
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-follow_focus = true
+follow_focus = false
 horizontal_scroll_mode = 0
 vertical_scroll_mode = 2
 
 [node name="MessagesVBox" type="VBoxContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationScroll"]
 layout_mode = 2
 size_flags_horizontal = 3
+size_flags_vertical = 4
 theme_override_constants/separation = 10
 
 [node name="ComposerPanel" type="PanelContainer" parent="RootVBox/MainSplit"]

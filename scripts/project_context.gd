@@ -4,6 +4,7 @@ extends RefCounted
 
 const MAX_SCRIPT_CHARS := 4000
 const MAX_TREE_DEPTH := 6
+const MAX_TREE_NODES := 120
 
 var _editor_plugin: EditorPlugin = null
 
@@ -73,14 +74,24 @@ func _build_selection_context() -> String:
 	if nodes.is_empty():
 		return "## Selection\nNo nodes selected."
 	
+	var root := ei.get_edited_scene_root()
 	var lines: PackedStringArray = ["## Selection"]
 	for node in nodes:
-		lines.append("- %s (%s)" % [node.get_path(), node.get_class()])
+		lines.append("- %s (%s)" % [_rel_path(root, node), node.get_class()])
 		var props := _serialize_node_properties(node, 8)
 		for prop_line in props:
 			lines.append("  - %s" % prop_line)
 	
 	return "\n".join(lines)
+
+func _rel_path(root: Node, node: Node) -> String:
+	if root == null or node == null:
+		return node.name if node else ""
+	if node == root:
+		return "."
+	if root.is_ancestor_of(node):
+		return str(root.get_path_to(node))
+	return node.name
 
 func _build_project_summary() -> String:
 	var lines: PackedStringArray = ["## Project summary"]
@@ -153,7 +164,10 @@ func _build_scene_tree_summary(max_depth: int = 4) -> String:
 		return "## Scene tree\nNo scene loaded."
 	
 	var lines: PackedStringArray = ["## Scene tree"]
-	_serialize_tree(root, 0, max_depth, lines, "  ")
+	var counter: Array = [0]
+	_serialize_tree(root, 0, max_depth, lines, "  ", counter)
+	if counter[0] >= MAX_TREE_NODES:
+		lines.append("  … (árbol truncado en %d nodos / tree truncated at %d nodes)" % [MAX_TREE_NODES, MAX_TREE_NODES])
 	return "\n".join(lines)
 
 func _build_open_scripts_summary(include_content: bool = false) -> String:
@@ -195,19 +209,28 @@ func _build_recent_files_summary() -> String:
 		lines.append("- %s" % file_path)
 	return "\n".join(lines)
 
-func _serialize_tree(node: Node, depth: int, max_depth: int, lines: PackedStringArray, indent: String) -> void:
-	if depth > max_depth:
+func _serialize_tree(node: Node, depth: int, max_depth: int, lines: PackedStringArray, indent: String, counter: Array) -> void:
+	if depth > max_depth or counter[0] >= MAX_TREE_NODES:
 		return
+	counter[0] += 1
+	# Only show pos/scale when they differ from defaults (keeps the tree compact).
+	# Mostrar pos/scale solo cuando difieren de los valores por defecto (árbol compacto).
 	var suffix := ""
 	if node is Node3D:
 		var n3d := node as Node3D
-		suffix = " pos=%s scale=%s" % [n3d.position, n3d.scale]
+		if n3d.position != Vector3.ZERO:
+			suffix += " pos=%s" % str(n3d.position)
+		if n3d.scale != Vector3.ONE:
+			suffix += " scale=%s" % str(n3d.scale)
 	elif node is Node2D:
 		var n2d := node as Node2D
-		suffix = " pos=%s scale=%s" % [n2d.position, n2d.scale]
+		if n2d.position != Vector2.ZERO:
+			suffix += " pos=%s" % str(n2d.position)
+		if n2d.scale != Vector2.ONE:
+			suffix += " scale=%s" % str(n2d.scale)
 	lines.append("%s- %s (%s)%s" % [indent, node.name, node.get_class(), suffix])
 	for child in node.get_children():
-		_serialize_tree(child, depth + 1, max_depth, lines, indent + "  ")
+		_serialize_tree(child, depth + 1, max_depth, lines, indent + "  ", counter)
 
 func _serialize_node_properties(node: Node, max_props: int) -> PackedStringArray:
 	var result: PackedStringArray = []

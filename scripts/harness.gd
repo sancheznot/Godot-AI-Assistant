@@ -91,10 +91,15 @@ func format_for_display(parsed: Dictionary) -> String:
 func _get_agent_instructions() -> String:
 	return (
 		"## Agent mode\n"
-		+ "You may use editor tools across multiple steps.\n"
-		+ "After each tool batch you will receive tool results and an updated scene snapshot.\n"
-		+ "Verify positions, sizes, and scene structure before finishing.\n"
-		+ "When the task is complete, reply with a final summary only and do NOT include <tool_call> blocks."
+		+ "You act over multiple steps using editor tools to ACTUALLY perform the user's task.\n"
+		+ "Do NOT just inspect the scene or describe a plan: you must execute the tool calls "
+		+ "that make the real changes (create_scene, add_node, instance_scene, create_box_mesh, "
+		+ "set_node_property, move_node_3d, etc.).\n"
+		+ "Inspect only when you truly need information (one quick inspection tool), then immediately act.\n"
+		+ "Emit tool calls using exactly: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>\n"
+		+ "After each tool batch you receive results and an updated scene snapshot; use them to continue.\n"
+		+ "Only reply with a final summary (and NO <tool_call> blocks) AFTER you have already made the "
+		+ "requested changes. Never end the task with only an inspection or a plan."
 	)
 
 func _load_base_context() -> String:
@@ -124,7 +129,8 @@ func _read_text_file(path: String) -> String:
 
 func _extract_tag_block(text: String, tag_name: String) -> String:
 	var regex := RegEx.new()
-	regex.compile("<%s>(.*?)</%s>" % [tag_name, tag_name])
+	# (?s) = dot matches newlines / (?s) = el punto incluye saltos de línea
+	regex.compile("(?i)(?s)<%s>(.*?)</%s>" % [tag_name, tag_name])
 	var match_result := regex.search(text)
 	if match_result:
 		return match_result.get_string(1)
@@ -132,5 +138,5 @@ func _extract_tag_block(text: String, tag_name: String) -> String:
 
 func _remove_tag_block(text: String, tag_name: String) -> String:
 	var regex := RegEx.new()
-	regex.compile("<%s>.*?</%s>" % [tag_name, tag_name])
+	regex.compile("(?i)(?s)<%s>.*?</%s>" % [tag_name, tag_name])
 	return regex.sub(text, "", true)

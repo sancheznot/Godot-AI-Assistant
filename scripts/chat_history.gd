@@ -150,9 +150,18 @@ func add_message(role: String, content: String, is_error: bool = false) -> void:
 		messages = messages.slice(messages.size() - MAX_MESSAGES)
 	session["messages"] = messages
 	session["updated_at"] = Time.get_unix_time_from_system()
-	if role == "user" and (messages.size() <= 2 or String(session.get("title", "")) == "Nuevo chat"):
-		session["title"] = _title_from_message(content)
+	if role == "user" and _count_user_messages(messages) <= 1:
+		var current_title: String = String(session.get("title", ""))
+		if current_title in ["Nuevo chat", "New chat", ""]:
+			session["title"] = _title_from_message(content)
 	save_history()
+
+func _count_user_messages(messages: Array) -> int:
+	var count: int = 0
+	for message in messages:
+		if message is Dictionary and String(message.get("role", "")) == "user":
+			count += 1
+	return count
 
 func get_session_summaries(filter: String = "", include_archived: bool = false) -> Array:
 	var normalized: String = filter.to_lower().strip_edges()

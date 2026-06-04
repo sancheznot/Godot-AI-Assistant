@@ -234,7 +234,7 @@ func _add_entry(provider_id: String, model_id: String) -> void:
 	entries.append({
 		"provider_id": provider_id,
 		"model_id": model_id,
-		"label": "%s · %s" % [model_id, config_manager.get_provider_label(provider_id)]
+		"label": model_id
 	})
 
 func _add_fallback_entry(provider_id: String, provider_cfg: Dictionary) -> void:

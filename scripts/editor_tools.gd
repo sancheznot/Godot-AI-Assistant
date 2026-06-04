@@ -49,10 +49,17 @@ Node editing:
 - create_box_mesh: params {"parent_node_path":"","node_name":"Crate","size":[1,1,1],"position":[0,0.5,0]}
 - set_tilemap_cell: params {"node_path":"Root/TileMapLayer","coords":[3,4],"source_id":0,"atlas_coords":[0,0]}
 
+Scripting (create AND attach a script in ONE call):
+- create_script: params {"script_path":"res://scripts/Door.gd","attach_to":"Floor_1_exit/Door_02-n1","content":"extends Node3D\\n\\nfunc _ready():\\n\\tprint(\\"ready\\")\\n"}
+  IMPORTANT: put the FULL script code in the "content" param (escape newlines as \\n). Do NOT put code in a separate markdown block. This single call writes the file and attaches it to attach_to (optional). The script is saved automatically — there is no create_script/open_script/save_script split.
+
 Rules:
-- Use res:// paths only.
-- Inspect the scene before editing when unsure.
-- After creating or moving nodes, inspect them to verify positions and sizes.
+- Use res:// paths only. NEVER prefix paths with "@" (write res://... not @res://...).
+- node_path / parent_node_path / attach_to are RELATIVE to the edited scene root (e.g. "Floor_1_exit/Ground_05"). Use "" for the root itself.
+- There is NO open_script / save_script / create_node tool. To make a script use create_script (it saves and attaches in one step).
+- To actually perform the task, EXECUTE the editing tools. Do not stop after only inspecting and do not repeat the same plan.
+- Match the script's `extends` to the target node type (inspect_node if unsure).
+- Inspect the scene only when you truly need info, then act.
 - Prefer small, safe edits."""
 
 func list_tool_names() -> Array[String]:
@@ -77,9 +84,13 @@ func list_tool_names() -> Array[String]:
 		"set_tilemap_cell",
 		"list_project_files",
 		"inspect_node",
+		"create_script",
+		"open_script",
+		"save_script",
 	]
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
+	params = _normalize_tool_params(params)
 	var result: Dictionary
 	match tool_name:
 		"create_scene":
@@ -122,27 +133,155 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_list_project_files(params)
 		"inspect_node":
 			result = _tool_inspect_node(params)
+		"create_script", "write_script":
+			result = _tool_create_script(params)
+		"open_script":
+			result = _tool_open_script(params)
+		"save_script":
+			result = {"ok": true, "status": "scripts are saved automatically by create_script"}
 		_:
 			result = {"ok": false, "error": "Unknown tool: %s" % tool_name}
 	
 	tool_executed.emit(tool_name, result)
 	return result
 
+func _normalize_tool_params(value: Variant) -> Variant:
+	# Models often copy the "@" mention prefix into paths (e.g. "@res://..."),
+	# which breaks res:// validation. Strip it everywhere, recursively.
+	# Los modelos copian el prefijo "@" de las menciones en las rutas (p. ej. "@res://..."),
+	# lo que rompe la validación res://. Quitarlo en todas partes, recursivamente.
+	if value is String:
+		var s: String = value
+		if s.begins_with("@res://"):
+			return s.substr(1)
+		if s.begins_with("@/"):
+			return "res://" + s.substr(2)
+		return s
+	if value is Dictionary:
+		var out: Dictionary = {}
+		for key in value:
+			out[key] = _normalize_tool_params(value[key])
+		return out
+	if value is Array:
+		var arr: Array = []
+		for item in value:
+			arr.append(_normalize_tool_params(item))
+		return arr
+	return value
+
+func _rel_path(node: Node) -> String:
+	# Scene-relative path instead of the huge absolute editor viewport path.
+	# Ruta relativa a la escena en lugar de la enorme ruta absoluta del editor.
+	var root := _edited_root()
+	if root == null or node == null:
+		return node.name if node else ""
+	if node == root:
+		return "."
+	if root.is_ancestor_of(node):
+		return str(root.get_path_to(node))
+	return node.name
+
 func parse_and_execute_tool_calls(text: String) -> Array[Dictionary]:
 	var results: Array[Dictionary] = []
-	var regex := RegEx.new()
-	regex.compile("<tool_call>(.*?)</tool_call>")
-	for match_result in regex.search_all(text):
-		var raw_json := match_result.get_string(1).strip_edges()
-		var parsed = JSON.parse_string(raw_json)
+	var seen: Dictionary = {}
+	for raw_json in extract_tool_call_json_strings(text):
+		if seen.has(raw_json):
+			continue
+		seen[raw_json] = true
+		var parsed: Variant = _parse_tool_json(raw_json)
 		if parsed == null or not parsed is Dictionary:
 			results.append({"ok": false, "error": "Invalid tool JSON", "raw": raw_json})
 			continue
 		var tool_name := String(parsed.get("tool", ""))
-		var params: Dictionary = parsed.get("params", {})
+		var params: Dictionary = _normalize_tool_params(parsed.get("params", {}))
 		var tool_result := execute_tool(tool_name, params)
 		results.append({"tool": tool_name, "params": params, "result": tool_result})
 	return results
+
+func has_tool_calls(text: String) -> bool:
+	return not extract_tool_call_json_strings(text).is_empty()
+
+func extract_tool_call_json_strings(text: String) -> Array[String]:
+	var found: Array[String] = []
+	var seen: Dictionary = {}
+	var tag_regex := RegEx.new()
+	tag_regex.compile("<tool_call>(.*?)</tool_call>")
+	for match_result in tag_regex.search_all(text):
+		_collect_tool_json_candidate(match_result.get_string(1), found, seen)
+	var fence_regex := RegEx.new()
+	fence_regex.compile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
+	for match_result in fence_regex.search_all(text):
+		var block: String = _extract_balanced_json_object(text, match_result.get_start(1))
+		if not block.is_empty():
+			_collect_tool_json_candidate(block, found, seen)
+		else:
+			_collect_tool_json_candidate(match_result.get_string(1), found, seen)
+	for inline_start in _find_inline_tool_json_starts(text):
+		var block: String = _extract_balanced_json_object(text, inline_start)
+		_collect_tool_json_candidate(block, found, seen)
+	return found
+
+func _find_inline_tool_json_starts(text: String) -> Array[int]:
+	var starts: Array[int] = []
+	var search_from: int = 0
+	while search_from < text.length():
+		var idx: int = text.find("{\"tool\"", search_from)
+		if idx < 0:
+			idx = text.find("{ \"tool\"", search_from)
+		if idx < 0:
+			break
+		starts.append(idx)
+		search_from = idx + 1
+	return starts
+
+func _extract_balanced_json_object(text: String, start: int) -> String:
+	if start < 0 or start >= text.length() or text[start] != "{":
+		return ""
+	var depth: int = 0
+	var in_string: bool = false
+	var escape: bool = false
+	for i in range(start, text.length()):
+		var ch: String = text[i]
+		if in_string:
+			if escape:
+				escape = false
+			elif ch == "\\":
+				escape = true
+			elif ch == "\"":
+				in_string = false
+			continue
+		match ch:
+			"\"":
+				in_string = true
+			"{":
+				depth += 1
+			"}":
+				depth -= 1
+				if depth == 0:
+					return text.substr(start, i - start + 1)
+	return ""
+
+func _collect_tool_json_candidate(raw: String, found: Array[String], seen: Dictionary) -> void:
+	var cleaned: String = raw.strip_edges()
+	if cleaned.is_empty() or seen.has(cleaned):
+		return
+	if not cleaned.contains("\"tool\""):
+		return
+	seen[cleaned] = true
+	found.append(cleaned)
+
+func _parse_tool_json(raw_json: String) -> Variant:
+	var cleaned: String = raw_json.strip_edges()
+	var parsed: Variant = JSON.parse_string(cleaned)
+	if parsed != null:
+		return parsed
+	var repaired: String = cleaned
+	repaired = repaired.replace("\"params\":{}", "\"params\": {}")
+	repaired = repaired.replace("\"params:{\"", "\"params\": {}")
+	repaired = repaired.replace("\"params:{", "\"params\": {")
+	if repaired != cleaned:
+		return JSON.parse_string(repaired)
+	return null
 
 func _editor_interface() -> EditorInterface:
 	if _editor_plugin:
@@ -234,7 +373,7 @@ func _tool_select_node(params: Dictionary) -> Dictionary:
 	ei.get_selection().add_node(node)
 	if ei.has_method("inspect_object"):
 		ei.inspect_object(node)
-	return {"ok": true, "selected": str(node.get_path()), "type": node.get_class()}
+	return {"ok": true, "selected": _rel_path(node), "type": node.get_class()}
 
 func _tool_open_scene(params: Dictionary) -> Dictionary:
 	var scene_path := String(params.get("scene_path", ""))
@@ -289,7 +428,7 @@ func _tool_instance_scene(params: Dictionary) -> Dictionary:
 			(instance as Node2D).position = Vector2(float(position[0]), float(position[1]))
 	
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(instance.get_path()), "instance_of": scene_path}
+	return {"ok": true, "node_path": _rel_path(instance), "instance_of": scene_path}
 
 func _tool_add_node(params: Dictionary) -> Dictionary:
 	var root := _edited_root()
@@ -324,7 +463,7 @@ func _tool_add_node(params: Dictionary) -> Dictionary:
 			(new_node as Node2D).position = Vector2(float(position[0]), float(position[1]))
 	
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(new_node.get_path()), "type": node_type}
+	return {"ok": true, "node_path": _rel_path(new_node), "type": node_type}
 
 func _tool_set_node_property(params: Dictionary) -> Dictionary:
 	var node_path := String(params.get("node_path", ""))
@@ -335,6 +474,20 @@ func _tool_set_node_property(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(node_path)
 	if node == null:
 		return {"ok": false, "error": "Node not found: %s" % node_path}
+	
+	# Special-case "script": load the .gd resource instead of assigning a raw string.
+	# Caso especial "script": cargar el recurso .gd en vez de asignar un string crudo.
+	if property_name == "script":
+		var script_path := String(params.get("value", ""))
+		if not script_path.ends_with(".gd") or not FileAccess.file_exists(script_path):
+			return {"ok": false, "error": "script value must be an existing res://.../*.gd path"}
+		var script_res: Script = load(script_path)
+		if script_res == null:
+			return {"ok": false, "error": "Could not load script: %s" % script_path}
+		node.set_script(script_res)
+		_mark_unsaved()
+		return {"ok": true, "node_path": node_path, "property": "script", "value": script_path}
+	
 	if not _property_exists(node, property_name):
 		return {"ok": false, "error": "Property not found: %s" % property_name}
 	
@@ -353,7 +506,7 @@ func _tool_move_node_3d(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "position requires [x,y,z]"}
 	(node as Node3D).position = Vector3(float(pos_array[0]), float(pos_array[1]), float(pos_array[2]))
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "position": _vector3_to_array((node as Node3D).position)}
+	return {"ok": true, "node_path": _rel_path(node), "position": _vector3_to_array((node as Node3D).position)}
 
 func _tool_move_node_2d(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))
@@ -366,7 +519,7 @@ func _tool_move_node_2d(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "position requires [x,y]"}
 	(node as Node2D).position = Vector2(float(pos_array[0]), float(pos_array[1]))
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "position": _vector2_to_array((node as Node2D).position)}
+	return {"ok": true, "node_path": _rel_path(node), "position": _vector2_to_array((node as Node2D).position)}
 
 func _tool_scale_node_3d(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))
@@ -379,7 +532,7 @@ func _tool_scale_node_3d(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "scale requires [x,y,z]"}
 	(node as Node3D).scale = Vector3(float(scale_array[0]), float(scale_array[1]), float(scale_array[2]))
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "scale": _vector3_to_array((node as Node3D).scale)}
+	return {"ok": true, "node_path": _rel_path(node), "scale": _vector3_to_array((node as Node3D).scale)}
 
 func _tool_scale_node_2d(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))
@@ -392,7 +545,7 @@ func _tool_scale_node_2d(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "scale requires [x,y]"}
 	(node as Node2D).scale = Vector2(float(scale_array[0]), float(scale_array[1]))
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "scale": _vector2_to_array((node as Node2D).scale)}
+	return {"ok": true, "node_path": _rel_path(node), "scale": _vector2_to_array((node as Node2D).scale)}
 
 func _tool_rotate_node_3d(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))
@@ -405,7 +558,7 @@ func _tool_rotate_node_3d(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "rotation_degrees requires [x,y,z]"}
 	(node as Node3D).rotation_degrees = Vector3(float(rotation_array[0]), float(rotation_array[1]), float(rotation_array[2]))
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "rotation_degrees": _vector3_to_array((node as Node3D).rotation_degrees)}
+	return {"ok": true, "node_path": _rel_path(node), "rotation_degrees": _vector3_to_array((node as Node3D).rotation_degrees)}
 
 func _tool_create_box_mesh(params: Dictionary) -> Dictionary:
 	var root := _edited_root()
@@ -439,7 +592,7 @@ func _tool_create_box_mesh(params: Dictionary) -> Dictionary:
 	_mark_unsaved()
 	return {
 		"ok": true,
-		"node_path": str(mesh_instance.get_path()),
+		"node_path": _rel_path(mesh_instance),
 		"size": size_array,
 		"position": _vector3_to_array(mesh_instance.position)
 	}
@@ -469,7 +622,7 @@ func _tool_get_tilemap_cells(params: Dictionary) -> Dictionary:
 	
 	return {
 		"ok": true,
-		"node_path": str(node.get_path()),
+		"node_path": _rel_path(node),
 		"type": node.get_class(),
 		"cell_count": cells.size(),
 		"cells": cells
@@ -499,7 +652,7 @@ func _tool_set_tilemap_cell(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "TileMap node does not support set_cell"}
 	
 	_mark_unsaved()
-	return {"ok": true, "node_path": str(node.get_path()), "coords": coords_array, "source_id": source_id, "atlas_coords": atlas_array}
+	return {"ok": true, "node_path": _rel_path(node), "coords": coords_array, "source_id": source_id, "atlas_coords": atlas_array}
 
 func _tool_list_project_files(params: Dictionary) -> Dictionary:
 	var extension := String(params.get("extension", ".gd"))
@@ -513,6 +666,75 @@ func _tool_inspect_node(params: Dictionary) -> Dictionary:
 	if node == null:
 		return {"ok": false, "error": "Node not found"}
 	return {"ok": true, "node": _serialize_node_summary(node, true)}
+
+func _tool_create_script(params: Dictionary) -> Dictionary:
+	# Accept both script_path and file_path (models use either).
+	# Aceptar script_path y file_path (los modelos usan cualquiera).
+	var script_path := String(params.get("script_path", params.get("file_path", "")))
+	if script_path.is_empty() or not script_path.begins_with("res://") or not script_path.ends_with(".gd"):
+		return {"ok": false, "error": "script_path must be res://.../*.gd"}
+	
+	var attach_to := String(params.get("attach_to", params.get("node_path", "")))
+	var content := String(params.get("content", params.get("code", "")))
+	if content.strip_edges().is_empty():
+		# Sensible default based on the target node type, if any.
+		# Plantilla por defecto según el tipo del nodo objetivo, si lo hay.
+		var base_type := "Node"
+		if not attach_to.is_empty():
+			var target := _get_node_by_path(attach_to)
+			if target:
+				base_type = target.get_class()
+		content = "extends %s\n\nfunc _ready() -> void:\n\tpass\n" % base_type
+	
+	var dir_path := script_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(dir_path)):
+		var make_dir := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+		if make_dir != OK:
+			return {"ok": false, "error": "Could not create folder: %s" % dir_path}
+	
+	var file := FileAccess.open(script_path, FileAccess.WRITE)
+	if file == null:
+		return {"ok": false, "error": "Could not write script: %s" % script_path}
+	file.store_string(content)
+	file.close()
+	
+	var ei := _editor_interface()
+	if ei:
+		ei.get_resource_filesystem().scan()
+	
+	var result := {"ok": true, "script_path": script_path, "lines": content.split("\n").size()}
+	
+	if not attach_to.is_empty():
+		var node := _get_node_by_path(attach_to)
+		if node == null:
+			result["attach_warning"] = "Script created but node not found: %s" % attach_to
+		else:
+			var script_res: Script = load(script_path)
+			if script_res == null:
+				result["attach_warning"] = "Script created but failed to load for attach"
+			else:
+				node.set_script(script_res)
+				result["attached_to"] = _rel_path(node)
+				_mark_unsaved()
+	
+	if ei and ei.has_method("edit_script"):
+		var opened: Script = load(script_path)
+		if opened:
+			ei.edit_script(opened)
+	return result
+
+func _tool_open_script(params: Dictionary) -> Dictionary:
+	var script_path := String(params.get("script_path", params.get("file_path", "")))
+	if script_path.is_empty() or not script_path.ends_with(".gd"):
+		return {"ok": false, "error": "script_path must be res://.../*.gd"}
+	if not FileAccess.file_exists(script_path):
+		return {"ok": false, "error": "Script does not exist: %s" % script_path}
+	var ei := _editor_interface()
+	if ei and ei.has_method("edit_script"):
+		var script_res: Script = load(script_path)
+		if script_res:
+			ei.edit_script(script_res)
+	return {"ok": true, "opened": script_path}
 
 func _serialize_tile_cell(node: Node, coords: Vector2i) -> Dictionary:
 	if node is TileMapLayer:
@@ -534,20 +756,28 @@ func _serialize_tile_cell(node: Node, coords: Vector2i) -> Dictionary:
 
 func _serialize_node_summary(node: Node, include_properties: bool = false) -> Dictionary:
 	var data := {
-		"path": str(node.get_path()),
+		"path": _rel_path(node),
 		"type": node.get_class(),
 		"name": node.name
 	}
+	# Only include transform fields when they differ from defaults (keeps context compact).
+	# Incluir transform solo cuando difiere de los valores por defecto (mantiene el contexto compacto).
 	if node is Node3D:
 		var n3d := node as Node3D
-		data["position"] = _vector3_to_array(n3d.position)
-		data["rotation_degrees"] = _vector3_to_array(n3d.rotation_degrees)
-		data["scale"] = _vector3_to_array(n3d.scale)
+		if n3d.position != Vector3.ZERO:
+			data["position"] = _vector3_to_array(n3d.position)
+		if n3d.rotation_degrees != Vector3.ZERO:
+			data["rotation_degrees"] = _vector3_to_array(n3d.rotation_degrees)
+		if n3d.scale != Vector3.ONE:
+			data["scale"] = _vector3_to_array(n3d.scale)
 	elif node is Node2D:
 		var n2d := node as Node2D
-		data["position"] = _vector2_to_array(n2d.position)
-		data["rotation_degrees"] = n2d.rotation_degrees
-		data["scale"] = _vector2_to_array(n2d.scale)
+		if n2d.position != Vector2.ZERO:
+			data["position"] = _vector2_to_array(n2d.position)
+		if not is_zero_approx(n2d.rotation_degrees):
+			data["rotation_degrees"] = n2d.rotation_degrees
+		if n2d.scale != Vector2.ONE:
+			data["scale"] = _vector2_to_array(n2d.scale)
 	if node is MeshInstance3D and (node as MeshInstance3D).mesh is BoxMesh:
 		data["mesh_size"] = _vector3_to_array(((node as MeshInstance3D).mesh as BoxMesh).size)
 	if include_properties:
@@ -567,11 +797,16 @@ func _serialize_node_summary(node: Node, include_properties: bool = false) -> Di
 
 func _serialize_tree_detailed(node: Node, depth: int, max_depth: int) -> Dictionary:
 	var data := _serialize_node_summary(node, false)
-	data["children"] = []
 	if depth >= max_depth:
+		var child_count: int = node.get_child_count()
+		if child_count > 0:
+			data["children_count"] = child_count
 		return data
+	var children: Array = []
 	for child in node.get_children():
-		data["children"].append(_serialize_tree_detailed(child, depth + 1, max_depth))
+		children.append(_serialize_tree_detailed(child, depth + 1, max_depth))
+	if not children.is_empty():
+		data["children"] = children
 	return data
 
 func _get_node_by_path(node_path: String) -> Node:
@@ -584,17 +819,19 @@ func _serialize_tree(node: Node, depth: int, max_depth: int) -> Dictionary:
 	var data := {
 		"name": node.name,
 		"type": node.get_class(),
-		"path": str(node.get_path()),
-		"children": []
+		"path": _rel_path(node)
 	}
-	if node is Node3D:
+	if node is Node3D and (node as Node3D).position != Vector3.ZERO:
 		data["position"] = _vector3_to_array((node as Node3D).position)
-	elif node is Node2D:
+	elif node is Node2D and (node as Node2D).position != Vector2.ZERO:
 		data["position"] = _vector2_to_array((node as Node2D).position)
 	if depth >= max_depth:
 		return data
+	var children: Array = []
 	for child in node.get_children():
-		data["children"].append(_serialize_tree(child, depth + 1, max_depth))
+		children.append(_serialize_tree(child, depth + 1, max_depth))
+	if not children.is_empty():
+		data["children"] = children
 	return data
 
 func _vector2_to_array(value: Vector2) -> Array:

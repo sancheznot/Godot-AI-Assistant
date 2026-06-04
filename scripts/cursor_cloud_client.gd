@@ -30,6 +30,12 @@ func setup(owner: Node) -> void:
 	poll_timer.timeout.connect(_poll_run_status)
 	owner.add_child(poll_timer)
 
+func cancel() -> void:
+	_stop_polling()
+	_pending_action = ""
+	if http_request != null and http_request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+		http_request.cancel_request()
+
 func reset_session() -> void:
 	_agent_id = ""
 	_run_id = ""
