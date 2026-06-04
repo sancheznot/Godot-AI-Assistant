@@ -23,6 +23,11 @@ const COLOR_BODY_TEXT := Color(0.9, 0.91, 0.94, 1.0)
 @onready var more_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/MoreButton
 @onready var history_popup: PopupPanel = $HistoryPopup
 @onready var history_search: LineEdit = $HistoryPopup/HistoryMargin/HistoryVBox/HistorySearch
+@onready var history_bulk_bar: HBoxContainer = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar
+@onready var history_select_all_checkbox: CheckBox = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar/HistorySelectAllCheckBox
+@onready var history_selection_label: Label = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar/HistorySelectionLabel
+@onready var history_bulk_archive_button: Button = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar/HistoryBulkArchiveButton
+@onready var history_bulk_delete_button: Button = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar/HistoryBulkDeleteButton
 @onready var history_list_vbox: VBoxContainer = $HistoryPopup/HistoryMargin/HistoryVBox/HistoryScroll/HistoryListVBox
 @onready var archived_toggle: Button = $HistoryPopup/HistoryMargin/HistoryVBox/ArchivedToggle
 @onready var archived_section: VBoxContainer = $HistoryPopup/HistoryMargin/HistoryVBox/ArchivedSection
@@ -34,6 +39,13 @@ const COLOR_BODY_TEXT := Color(0.9, 0.91, 0.94, 1.0)
 @onready var tools_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/ToolsCheckBox
 @onready var agent_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/AgentCheckBox
 @onready var thinking_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/ThinkingCheckBox
+@onready var vision_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/VisionCheckBox
+@onready var attachments_panel: HBoxContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AttachmentsPanel
+@onready var attachments_vbox: HBoxContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AttachmentsPanel/AttachmentsVBox
+@onready var attach_file_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/AttachFileButton
+@onready var attach_image_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/AttachImageButton
+@onready var attach_file_dialog: FileDialog = $AttachFileDialog
+@onready var attach_image_dialog: FileDialog = $AttachImageDialog
 @onready var status_label: Label = $RootVBox/StatusBar/StatusHBox/StatusLabel
 @onready var harness_label: Label = $RootVBox/StatusBar/StatusHBox/HarnessLabel
 @onready var shortcut_hint: Label = $RootVBox/StatusBar/StatusHBox/ShortcutHint
@@ -80,6 +92,11 @@ var _autocomplete_selected: int = 0
 var _history_session_menu: PopupMenu = null
 var _history_menu_session_id: String = ""
 var _history_archived_open: bool = false
+var _delete_confirm_dialog: ConfirmationDialog = null
+var _pending_delete_session_ids: Array = []
+var _history_selected_ids: Dictionary = {}
+var _history_visible_session_ids: Array = []
+var _history_ignore_select_all: bool = false
 var _request_busy: bool = false
 var _scroll_pending: bool = false
 var _scroll_retry_count: int = 0
@@ -88,8 +105,12 @@ var _follow_chat_scroll: bool = true
 var _scroll_programmatic: bool = false
 var _current_agent_log_text: String = ""
 var _active_copy_source: String = ""
+var _pending_attachments: Array = []
+var _syncing_capability_toggles: bool = false
 
 const AUTOCOMPLETE_MAX_HEIGHT := 120
+const ModelCapabilities := preload("res://addons/ai_assistant_plugin/scripts/model_capabilities.gd")
+const ComposerAttachments := preload("res://addons/ai_assistant_plugin/scripts/composer_attachments.gd")
 
 func setup(
 	plugin: EditorPlugin,
@@ -203,6 +224,8 @@ func _apply_composer_styles() -> void:
 	_style_toolbar_button(config_button, false)
 	_style_toolbar_button(send_button, true)
 	_style_toolbar_button(refresh_models_button, false)
+	_style_toolbar_button(attach_file_button, false)
+	_style_toolbar_button(attach_image_button, false)
 	_style_header_icon_button(new_agent_button)
 	_style_header_icon_button(history_button)
 	_style_header_icon_button(more_button)
@@ -265,16 +288,24 @@ func _apply_locale() -> void:
 	history_button.tooltip_text = _tr("ui.history_tooltip")
 	more_button.tooltip_text = _tr("ui.more_tooltip")
 	history_search.placeholder_text = _tr("ui.history_search_placeholder")
+	history_select_all_checkbox.text = _tr("ui.history_select_all")
+	history_bulk_archive_button.text = _tr("ui.history_bulk_archive")
+	history_bulk_delete_button.text = _tr("ui.history_bulk_delete")
 	archived_toggle.text = _tr("ui.history_archived_closed")
 	context_checkbox.text = _tr("ui.context")
 	tools_checkbox.text = _tr("ui.tools")
 	agent_checkbox.text = _tr("ui.agent")
 	thinking_checkbox.text = _tr("ui.think")
+	vision_checkbox.text = _tr("ui.vision")
+	attach_file_button.tooltip_text = _tr("ui.attach_file_tooltip")
 	config_button.text = _tr("ui.config")
 	refresh_models_button.tooltip_text = _tr("ui.refresh_models_tooltip")
 	send_button.tooltip_text = _tr("ui.send_tooltip")
 	shortcut_hint.text = _tr("ui.shortcut_hint")
 	prompt_text_edit.placeholder_text = _tr("ui.composer_placeholder")
+	_refresh_history_menus()
+	_update_delete_confirm_dialog_locale()
+	_update_capability_toggles()
 
 func _make_bubble_style(bg: Color, accent: Color) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
@@ -364,7 +395,7 @@ func _style_body_rich_text(label: RichTextLabel) -> void:
 	label.add_theme_font_size_override("normal_font_size", 13)
 	label.add_theme_color_override("default_color", COLOR_BODY_TEXT)
 
-func _append_user_message(text: String) -> void:
+func _append_user_message(text: String, attachments: Array = []) -> void:
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.add_theme_stylebox_override(
@@ -379,6 +410,21 @@ func _append_user_message(text: String) -> void:
 	var role_label := Label.new()
 	_style_role_label(role_label, COLOR_USER_ACCENT, _tr("ui.role_you"))
 	vbox.add_child(role_label)
+	
+	if not attachments.is_empty():
+		var attach_row := HBoxContainer.new()
+		attach_row.add_theme_constant_override("separation", 6)
+		for item in attachments:
+			if not item is Dictionary:
+				continue
+			var chip := Label.new()
+			var kind: String = String(item.get("kind", ""))
+			var name: String = String(item.get("name", "file"))
+			chip.text = "🖼 %s" % name if kind == "image" else "📎 %s" % name
+			chip.add_theme_font_size_override("font_size", 11)
+			chip.add_theme_color_override("font_color", Color(0.72, 0.78, 0.9, 1.0))
+			attach_row.add_child(chip)
+		vbox.add_child(attach_row)
 	
 	var body := RichTextLabel.new()
 	_style_body_rich_text(body)
@@ -649,8 +695,31 @@ func _flush_body_segment(segments: Array, body_lines: PackedStringArray) -> void
 	var content: String = "\n".join(body_lines).strip_edges()
 	if content.is_empty():
 		return
-	for sub in _split_body_code_blocks(content):
+	for sub in _split_embedded_tool_calls(content):
 		segments.append(sub)
+
+func _split_embedded_tool_calls(text: String) -> Array:
+	var segments: Array = []
+	var tag_regex := RegEx.new()
+	tag_regex.compile("(?s)<tool_call>(.*?)</tool_call>")
+	var last_end: int = 0
+	for match_result in tag_regex.search_all(text):
+		var before: String = text.substr(last_end, match_result.get_start() - last_end).strip_edges()
+		if not before.is_empty():
+			for sub in _split_body_code_blocks(before):
+				segments.append(sub)
+		var inner: String = match_result.get_string(1).strip_edges()
+		if not inner.is_empty():
+			segments.append({"type": "tool_calls", "content": inner})
+		last_end = match_result.get_end()
+	var tail: String = text.substr(last_end).strip_edges()
+	if not tail.is_empty():
+		for sub in _split_body_code_blocks(tail):
+			if sub is Dictionary:
+				segments.append(sub)
+	if segments.is_empty() and not text.strip_edges().is_empty():
+		segments.append({"type": "body", "content": text.strip_edges()})
+	return segments
 
 func _split_body_code_blocks(text: String) -> Array:
 	var segments: Array = []
@@ -723,7 +792,8 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 				_tr("ui.tool_results_hide"),
 				_format_tool_detail_bbcode,
 				Color(0.1, 0.14, 0.12, 1.0),
-				Color(0.22, 0.38, 0.3, 1.0)
+				Color(0.22, 0.38, 0.3, 1.0),
+				content
 			))
 		elif segment_type == "tool_calls":
 			container.add_child(_make_collapsible_detail_block(
@@ -733,7 +803,8 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 				_tr("ui.tool_calls_hide"),
 				_format_tool_detail_bbcode,
 				Color(0.1, 0.12, 0.16, 1.0),
-				Color(0.28, 0.34, 0.46, 1.0)
+				Color(0.28, 0.34, 0.46, 1.0),
+				content
 			))
 		elif segment_type == "code":
 			container.add_child(_make_collapsible_detail_block(
@@ -743,7 +814,8 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 				_tr("ui.code_block_hide"),
 				_format_tool_detail_bbcode,
 				Color(0.12, 0.11, 0.15, 1.0),
-				Color(0.34, 0.3, 0.42, 1.0)
+				Color(0.34, 0.3, 0.42, 1.0),
+				content
 			))
 		else:
 			container.add_child(_make_body_rich_label(_format_body_bbcode(content)))
@@ -762,7 +834,8 @@ func _make_collapsible_thinking_block(thinking_text: String) -> PanelContainer:
 		_tr("ui.thinking_hide"),
 		_format_thinking_bbcode,
 		Color(0.11, 0.13, 0.18, 1.0),
-		Color(0.28, 0.32, 0.42, 1.0)
+		Color(0.28, 0.32, 0.42, 1.0),
+		""
 	)
 
 func _make_collapsible_detail_block(
@@ -772,7 +845,8 @@ func _make_collapsible_detail_block(
 	hide_key: String,
 	format_fn: Callable,
 	bg_color: Color,
-	border_color: Color
+	border_color: Color,
+	copy_source: String = ""
 ) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -790,15 +864,22 @@ func _make_collapsible_detail_block(
 	vbox.add_theme_constant_override("separation", 4)
 	panel.add_child(vbox)
 	var line_count: int = maxi(1, detail_text.split("\n", false).size())
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 6)
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(header)
 	var toggle := Button.new()
 	toggle.text = _tr(show_key, [line_count])
 	toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	toggle.flat = true
 	toggle.focus_mode = Control.FOCUS_NONE
+	toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toggle.add_theme_font_size_override("font_size", 12)
 	toggle.add_theme_color_override("font_color", Color(0.72, 0.76, 0.86, 1.0))
 	toggle.add_theme_color_override("font_hover_color", Color(0.9, 0.92, 0.96, 1.0))
-	vbox.add_child(toggle)
+	header.add_child(toggle)
+	if not copy_source.is_empty():
+		header.add_child(_make_copy_button(func() -> String: return copy_source))
 	var body := RichTextLabel.new()
 	_style_body_rich_text(body)
 	body.visible = false
@@ -949,10 +1030,8 @@ func _setup_history_ui() -> void:
 	_history_session_menu.add_item(_tr("ui.history_menu_delete"), 1)
 	add_child(_history_session_menu)
 	_history_session_menu.id_pressed.connect(_on_history_session_menu_id)
-	
-	more_menu.clear()
-	more_menu.add_item(_tr("ui.clear"), 0)
-	more_menu.add_item(_tr("ui.config"), 1)
+	_setup_delete_confirm_dialog()
+	_refresh_history_menus()
 	more_menu.id_pressed.connect(_on_more_menu_id)
 	
 	var shortcut := Shortcut.new()
@@ -965,6 +1044,9 @@ func _setup_history_ui() -> void:
 	history_search.text_changed.connect(_on_history_search_changed)
 	archived_toggle.pressed.connect(_on_archived_toggle_pressed)
 	history_popup.popup_hide.connect(_on_history_popup_hide)
+	history_select_all_checkbox.toggled.connect(_on_history_select_all_toggled)
+	history_bulk_archive_button.pressed.connect(_on_history_bulk_archive_pressed)
+	history_bulk_delete_button.pressed.connect(_on_history_bulk_delete_pressed)
 
 func _update_history_popup_styles() -> void:
 	var panel_style := StyleBoxFlat.new()
@@ -989,6 +1071,11 @@ func _update_history_popup_styles() -> void:
 	search_style.content_margin_bottom = 6
 	history_search.add_theme_stylebox_override("normal", search_style)
 	history_search.add_theme_font_size_override("font_size", 12)
+	history_selection_label.add_theme_font_size_override("font_size", 11)
+	history_selection_label.add_theme_color_override("font_color", Color(0.58, 0.62, 0.72, 1.0))
+	for bulk_button in [history_bulk_archive_button, history_bulk_delete_button]:
+		bulk_button.add_theme_font_size_override("font_size", 11)
+	_update_history_selection_ui()
 
 func _style_header_icon_button(button: Button) -> void:
 	button.flat = true
@@ -1016,8 +1103,8 @@ func _toggle_history_popup() -> void:
 		return
 	_render_history_panel()
 	var anchor_pos: Vector2 = history_button.global_position
-	var popup_width: int = 320
-	var popup_height: int = 380
+	var popup_width: int = 360
+	var popup_height: int = 420
 	history_popup.size = Vector2i(popup_width, popup_height)
 	history_popup.position = Vector2i(
 		int(anchor_pos.x + history_button.size.x - popup_width),
@@ -1025,12 +1112,17 @@ func _toggle_history_popup() -> void:
 	)
 	history_popup.popup()
 
+func _clear_history_panel_children(container: Node) -> void:
+	for child in container.get_children():
+		container.remove_child(child)
+		child.free()
+
 func _render_history_panel() -> void:
-	for child in history_list_vbox.get_children():
-		child.queue_free()
-	for child in archived_section.get_children():
-		child.queue_free()
+	_clear_history_panel_children(history_list_vbox)
+	_clear_history_panel_children(archived_section)
+	_history_visible_session_ids.clear()
 	if chat_history == null:
+		_update_history_selection_ui()
 		return
 	var filter_text: String = history_search.text
 	var summaries: Array = chat_history.get_session_summaries(filter_text, false)
@@ -1039,6 +1131,7 @@ func _render_history_panel() -> void:
 	var older_items: Array = []
 	for summary in summaries:
 		if summary is Dictionary:
+			_history_visible_session_ids.append(String(summary.get("id", "")))
 			if _is_same_day(int(summary.get("updated_at", 0)), now_ts):
 				today_items.append(summary)
 			else:
@@ -1062,7 +1155,10 @@ func _render_history_panel() -> void:
 			_add_history_empty_label(archived_section, _tr("ui.history_archived_empty"))
 		else:
 			for summary in archived_items:
+				_history_visible_session_ids.append(String(summary.get("id", "")))
 				archived_section.add_child(_make_history_row(summary))
+	_prune_history_selection()
+	_update_history_selection_ui()
 
 func _add_history_section_header(parent: VBoxContainer, text: String) -> void:
 	var header := Label.new()
@@ -1094,14 +1190,25 @@ func _make_history_row(summary: Dictionary) -> PanelContainer:
 		row_style.bg_color = Color(0.18, 0.24, 0.36, 1.0)
 		row_style.border_color = Color(0.32, 0.42, 0.58, 1.0)
 		row_style.set_border_width_all(1)
+	elif _history_selected_ids.has(session_id):
+		row_style.bg_color = Color(0.16, 0.2, 0.28, 1.0)
+		row_style.border_color = Color(0.28, 0.38, 0.52, 1.0)
+		row_style.set_border_width_all(1)
 	else:
 		row_style.bg_color = Color(0.13, 0.13, 0.15, 1.0)
 	panel.add_theme_stylebox_override("panel", row_style)
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
+	row.add_theme_constant_override("separation", 4)
 	panel.add_child(row)
+	var select_checkbox := CheckBox.new()
+	select_checkbox.focus_mode = Control.FOCUS_NONE
+	select_checkbox.toggled.connect(func(pressed: bool) -> void:
+		_on_history_row_selected(session_id, pressed)
+	)
+	select_checkbox.set_pressed_no_signal(_history_selected_ids.has(session_id))
+	row.add_child(select_checkbox)
 	var active_icon := Label.new()
-	active_icon.custom_minimum_size = Vector2(16, 0)
+	active_icon.custom_minimum_size = Vector2(14, 0)
 	active_icon.text = "✓" if is_active else ""
 	active_icon.add_theme_font_size_override("font_size", 12)
 	active_icon.add_theme_color_override("font_color", Color(0.55, 0.75, 1.0, 1.0))
@@ -1125,7 +1232,53 @@ func _make_history_row(summary: Dictionary) -> PanelContainer:
 	var archive_button := _make_history_action_button("⊡", _tr("ui.history_row_archive"))
 	archive_button.pressed.connect(_toggle_session_archive.bind(session_id, not bool(summary.get("archived", false))))
 	row.add_child(archive_button)
+	var delete_button := _make_history_action_button("🗑", _tr("ui.history_row_delete"))
+	delete_button.pressed.connect(_prompt_delete_session.bind(session_id))
+	row.add_child(delete_button)
+	panel.set_meta("history_session_id", session_id)
 	return panel
+
+func _refresh_history_row_styles() -> void:
+	_apply_history_row_style(history_list_vbox)
+	_apply_history_row_style(archived_section)
+
+func _apply_history_row_style(container: Node) -> void:
+	for child in container.get_children():
+		if child is PanelContainer:
+			_style_history_row_panel(child as PanelContainer)
+
+func _style_history_row_panel(panel: PanelContainer) -> void:
+	var session_id: String = String(panel.get_meta("history_session_id", ""))
+	if session_id.is_empty():
+		return
+	var row: HBoxContainer = null
+	for child in panel.get_children():
+		if child is HBoxContainer:
+			row = child as HBoxContainer
+			break
+	if row == null:
+		return
+	var is_selected: bool = false
+	if row.get_child_count() > 0 and row.get_child(0) is CheckBox:
+		is_selected = (row.get_child(0) as CheckBox).button_pressed
+	var is_active: bool = chat_history != null and chat_history.active_session_id == session_id
+	var row_style := StyleBoxFlat.new()
+	row_style.set_corner_radius_all(8)
+	row_style.content_margin_left = 8
+	row_style.content_margin_right = 6
+	row_style.content_margin_top = 6
+	row_style.content_margin_bottom = 6
+	if is_active:
+		row_style.bg_color = Color(0.18, 0.24, 0.36, 1.0)
+		row_style.border_color = Color(0.32, 0.42, 0.58, 1.0)
+		row_style.set_border_width_all(1)
+	elif is_selected:
+		row_style.bg_color = Color(0.16, 0.2, 0.28, 1.0)
+		row_style.border_color = Color(0.28, 0.38, 0.52, 1.0)
+		row_style.set_border_width_all(1)
+	else:
+		row_style.bg_color = Color(0.13, 0.13, 0.15, 1.0)
+	panel.add_theme_stylebox_override("panel", row_style)
 
 func _make_history_action_button(label_text: String, tooltip: String) -> Button:
 	var button := Button.new()
@@ -1163,9 +1316,11 @@ func _toggle_session_pin(session_id: String, pinned: bool) -> void:
 
 func _toggle_session_archive(session_id: String, archived: bool) -> void:
 	if chat_history.archive_session(session_id, archived):
+		_history_selected_ids.erase(session_id)
 		if chat_history.active_session_id != session_id:
 			_restore_chat_from_history()
 		_refresh_history_ui()
+		_clear_history_selection()
 
 func _open_history_session_menu(session_id: String, anchor: Control) -> void:
 	_history_menu_session_id = session_id
@@ -1182,11 +1337,220 @@ func _on_history_session_menu_id(menu_id: int) -> void:
 				if chat_history.active_session_id == _history_menu_session_id:
 					_clear_conversation()
 					status_label.text = _tr("ui.status_chat_cleared")
+				_refresh_history_ui()
 		1:
-			if chat_history.delete_session(_history_menu_session_id):
-				_restore_chat_from_history()
-				status_label.text = _tr("ui.status_chat_deleted")
+			_prompt_delete_session(_history_menu_session_id)
+
+func _setup_delete_confirm_dialog() -> void:
+	if _delete_confirm_dialog != null:
+		return
+	_delete_confirm_dialog = ConfirmationDialog.new()
+	_delete_confirm_dialog.unresizable = true
+	_delete_confirm_dialog.initial_position = Window.WINDOW_INITIAL_POSITION_CENTER_MAIN_WINDOW_SCREEN
+	add_child(_delete_confirm_dialog)
+	_delete_confirm_dialog.confirmed.connect(_on_delete_chat_confirmed)
+	_update_delete_confirm_dialog_locale()
+
+func _update_delete_confirm_dialog_locale() -> void:
+	if _delete_confirm_dialog == null:
+		return
+	_delete_confirm_dialog.title = _tr("ui.delete_chat_confirm_title")
+	_delete_confirm_dialog.ok_button_text = _tr("ui.delete_chat_confirm_ok")
+	_delete_confirm_dialog.cancel_button_text = _tr("ui.delete_chat_confirm_cancel")
+
+func _refresh_history_menus() -> void:
+	if _history_session_menu:
+		_history_session_menu.set_item_text(0, _tr("ui.history_menu_clear"))
+		_history_session_menu.set_item_text(1, _tr("ui.history_menu_delete"))
+	if more_menu:
+		more_menu.clear()
+		more_menu.add_item(_tr("ui.clear"), 0)
+		more_menu.add_item(_tr("ui.delete_chat"), 1)
+		more_menu.add_item(_tr("ui.config"), 2)
+
+func _prompt_delete_session(session_id: String) -> void:
+	_prompt_delete_sessions([session_id])
+
+func _prompt_delete_sessions(session_ids: Array) -> void:
+	if chat_history == null or session_ids.is_empty():
+		return
+	var cleaned: Array = []
+	for raw_id in session_ids:
+		var session_id: String = String(raw_id).strip_edges()
+		if not session_id.is_empty() and chat_history.get_session(session_id):
+			cleaned.append(session_id)
+	if cleaned.is_empty():
+		return
+	_pending_delete_session_ids = cleaned
+	if _delete_confirm_dialog == null:
+		_setup_delete_confirm_dialog()
+	if cleaned.size() == 1:
+		var title: String = chat_history.get_session_title(String(cleaned[0]))
+		_delete_confirm_dialog.title = _tr("ui.delete_chat_confirm_title")
+		_delete_confirm_dialog.dialog_text = _tr("ui.delete_chat_confirm_body", [title])
+	else:
+		_delete_confirm_dialog.title = _tr("ui.delete_chats_confirm_title")
+		_delete_confirm_dialog.dialog_text = _tr("ui.delete_chats_confirm_body", [cleaned.size()])
+	_delete_confirm_dialog.popup_centered()
+
+func _prompt_delete_active_chat() -> void:
+	if chat_history == null or chat_history.active_session_id.is_empty():
+		return
+	_prompt_delete_sessions([chat_history.active_session_id])
+
+func _on_delete_chat_confirmed() -> void:
+	var session_ids: Array = _pending_delete_session_ids.duplicate()
+	_pending_delete_session_ids.clear()
+	_execute_delete_sessions(session_ids)
+
+func _execute_delete_session(session_id: String) -> void:
+	_execute_delete_sessions([session_id])
+
+func _execute_delete_sessions(session_ids: Array) -> void:
+	if chat_history == null or session_ids.is_empty():
+		return
+	var active_before: String = chat_history.active_session_id
+	var removed: int = chat_history.delete_sessions(session_ids)
+	if removed <= 0:
+		return
+	if active_before in session_ids or chat_history.active_session_id != active_before:
+		_restore_chat_from_history()
+	if removed == 1:
+		status_label.text = _tr("ui.status_chat_deleted")
+	else:
+		status_label.text = _tr("ui.status_chats_deleted", [removed])
 	_refresh_history_ui()
+	if history_popup.visible:
+		_clear_history_selection()
+
+func _get_selected_history_session_ids() -> Array:
+	var ids: Array = []
+	_collect_selected_history_ids(history_list_vbox, ids)
+	_collect_selected_history_ids(archived_section, ids)
+	return ids
+
+func _collect_selected_history_ids(container: Node, ids: Array) -> void:
+	for child in container.get_children():
+		if not child is PanelContainer:
+			continue
+		var session_id: String = String(child.get_meta("history_session_id", ""))
+		if session_id.is_empty():
+			continue
+		var row := child.get_child(0)
+		if row is HBoxContainer and row.get_child_count() > 0 and row.get_child(0) is CheckBox:
+			var checkbox := row.get_child(0) as CheckBox
+			if checkbox.button_pressed:
+				ids.append(session_id)
+
+func _clear_history_selection() -> void:
+	_history_selected_ids.clear()
+	_set_visible_history_checkboxes(false)
+	if history_select_all_checkbox:
+		_history_ignore_select_all = true
+		history_select_all_checkbox.set_pressed_no_signal(false)
+		_history_ignore_select_all = false
+	_update_history_selection_ui()
+	_refresh_history_row_styles()
+
+func _sync_history_selection_dict_from_ui() -> void:
+	_history_selected_ids.clear()
+	for session_id in _get_selected_history_session_ids():
+		_history_selected_ids[String(session_id)] = true
+
+func _set_visible_history_checkboxes(selected: bool) -> void:
+	_set_container_history_checkboxes(history_list_vbox, selected)
+	_set_container_history_checkboxes(archived_section, selected)
+
+func _set_container_history_checkboxes(container: Node, selected: bool) -> void:
+	for child in container.get_children():
+		if not child is PanelContainer:
+			continue
+		var row := child.get_child(0)
+		if row is HBoxContainer and row.get_child_count() > 0 and row.get_child(0) is CheckBox:
+			(row.get_child(0) as CheckBox).set_pressed_no_signal(selected)
+
+func _prune_history_selection() -> void:
+	var visible_set: Dictionary = {}
+	for session_id in _history_visible_session_ids:
+		var normalized: String = String(session_id).strip_edges()
+		if not normalized.is_empty():
+			visible_set[normalized] = true
+	for session_id in _history_selected_ids.keys():
+		if not visible_set.has(String(session_id)):
+			_history_selected_ids.erase(session_id)
+
+func _update_history_selection_ui() -> void:
+	if history_selection_label == null:
+		return
+	var selected_ids: Array = _get_selected_history_session_ids()
+	var selected_count: int = selected_ids.size()
+	_sync_history_selection_dict_from_ui()
+	history_selection_label.text = _tr("ui.history_selection_count", [selected_count])
+	var has_selection: bool = selected_count > 0
+	if history_bulk_archive_button:
+		history_bulk_archive_button.disabled = not has_selection
+		history_bulk_archive_button.text = _tr("ui.history_bulk_unarchive") if _should_bulk_unarchive_selected() else _tr("ui.history_bulk_archive")
+	if history_bulk_delete_button:
+		history_bulk_delete_button.disabled = not has_selection
+	if history_select_all_checkbox:
+		var visible_count: int = _history_visible_session_ids.size()
+		history_select_all_checkbox.disabled = visible_count == 0
+		_sync_select_all_checkbox(selected_count, visible_count)
+
+func _sync_select_all_checkbox(selected_count: int, visible_count: int) -> void:
+	if history_select_all_checkbox == null:
+		return
+	_history_ignore_select_all = true
+	history_select_all_checkbox.set_pressed_no_signal(visible_count > 0 and selected_count == visible_count)
+	_history_ignore_select_all = false
+
+func _should_bulk_unarchive_selected() -> bool:
+	var selected_ids: Array = _get_selected_history_session_ids()
+	if selected_ids.is_empty():
+		return false
+	for session_id in selected_ids:
+		var session: Dictionary = chat_history.get_session(String(session_id))
+		if session.is_empty() or not bool(session.get("archived", false)):
+			return false
+	return true
+
+func _on_history_row_selected(_session_id: String, _selected: bool) -> void:
+	_update_history_selection_ui()
+	_refresh_history_row_styles()
+
+func _on_history_select_all_toggled(selected: bool) -> void:
+	if _history_ignore_select_all:
+		return
+	_set_visible_history_checkboxes(selected)
+	_update_history_selection_ui()
+	_refresh_history_row_styles()
+
+func _on_history_bulk_archive_pressed() -> void:
+	var session_ids: Array = _get_selected_history_session_ids()
+	if session_ids.is_empty():
+		return
+	var archived: bool = not _should_bulk_unarchive_selected()
+	var active_before: String = chat_history.active_session_id
+	var changed: int = chat_history.archive_sessions(session_ids, archived)
+	if changed <= 0:
+		return
+	var active_changed: bool = active_before != chat_history.active_session_id
+	if not active_changed:
+		for session_id in session_ids:
+			if String(session_id) == active_before:
+				active_changed = true
+				break
+	if active_changed:
+		_restore_chat_from_history()
+	status_label.text = _tr("ui.status_chats_unarchived", [changed]) if not archived else _tr("ui.status_chats_archived", [changed])
+	_refresh_history_ui()
+	_clear_history_selection()
+
+func _on_history_bulk_delete_pressed() -> void:
+	var session_ids: Array = _get_selected_history_session_ids()
+	if session_ids.is_empty():
+		return
+	_prompt_delete_sessions(session_ids)
 
 func _on_history_search_changed(_new_text: String) -> void:
 	if history_popup.visible:
@@ -1198,8 +1562,11 @@ func _on_archived_toggle_pressed() -> void:
 
 func _on_history_popup_hide() -> void:
 	_history_archived_open = false
+	_history_selected_ids.clear()
+	_history_visible_session_ids.clear()
 	archived_section.visible = false
 	archived_toggle.text = _tr("ui.history_archived_closed")
+	_update_history_selection_ui()
 
 func _on_new_agent_pressed() -> void:
 	var replace: bool = Input.is_key_pressed(KEY_ALT)
@@ -1219,6 +1586,8 @@ func _on_more_menu_id(menu_id: int) -> void:
 		0:
 			_on_clear_current_chat()
 		1:
+			_prompt_delete_active_chat()
+		2:
 			config_dialog.open_dialog()
 
 func _on_clear_current_chat() -> void:
@@ -1539,16 +1908,145 @@ func _get_model_dropdown_label(entry: Dictionary) -> String:
 			return model_id
 	return label
 
+func _get_selected_capabilities() -> Dictionary:
+	var entry: Dictionary = _get_selected_model_entry()
+	return ModelCapabilities.get_capability_summary(
+		String(entry.get("provider_id", "")),
+		String(entry.get("model_id", "")),
+		entry.get("capabilities", {}) if entry.get("capabilities") is Dictionary else {}
+	)
+
+func _update_capability_toggles() -> void:
+	if vision_checkbox == null or thinking_checkbox == null:
+		return
+	var caps: Dictionary = _get_selected_capabilities()
+	_syncing_capability_toggles = true
+	thinking_checkbox.disabled = not bool(caps.get("thinking", false))
+	if thinking_checkbox.disabled:
+		thinking_checkbox.button_pressed = false
+		thinking_checkbox.tooltip_text = _tr("ui.think_unsupported")
+	else:
+		thinking_checkbox.button_pressed = bool(config_manager.get_setting("enable_thinking", true))
+		thinking_checkbox.tooltip_text = _tr("ui.think")
+	var vision_supported: bool = bool(caps.get("vision", false))
+	vision_checkbox.disabled = not vision_supported
+	if vision_checkbox.disabled:
+		vision_checkbox.button_pressed = false
+		vision_checkbox.tooltip_text = _tr("ui.vision_unsupported")
+		_remove_pending_images()
+	else:
+		vision_checkbox.button_pressed = bool(config_manager.get_setting("enable_vision", true))
+		vision_checkbox.tooltip_text = _tr("ui.vision")
+	if attach_image_button:
+		attach_image_button.disabled = not vision_supported
+		attach_image_button.tooltip_text = _tr("ui.attach_image_unsupported") if attach_image_button.disabled else _tr("ui.attach_image_tooltip")
+	_syncing_capability_toggles = false
+	_refresh_attachments_ui()
+
+func _refresh_attachments_ui() -> void:
+	if attachments_vbox == null:
+		return
+	for child in attachments_vbox.get_children():
+		child.queue_free()
+	if _pending_attachments.is_empty():
+		attachments_panel.visible = false
+		return
+	attachments_panel.visible = true
+	for index in _pending_attachments.size():
+		var item: Dictionary = _pending_attachments[index]
+		if not item is Dictionary:
+			continue
+		var chip := HBoxContainer.new()
+		chip.add_theme_constant_override("separation", 4)
+		var label := Label.new()
+		var kind: String = String(item.get("kind", ""))
+		label.text = "🖼 %s" % item.get("name", "image") if kind == "image" else "📎 %s" % item.get("name", "file")
+		label.add_theme_font_size_override("font_size", 11)
+		label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.92, 1.0))
+		chip.add_child(label)
+		var remove_btn := Button.new()
+		remove_btn.text = "×"
+		remove_btn.flat = true
+		remove_btn.focus_mode = Control.FOCUS_NONE
+		remove_btn.custom_minimum_size = Vector2(20, 20)
+		var captured_index: int = index
+		remove_btn.pressed.connect(func() -> void:
+			_remove_attachment_at(captured_index)
+		)
+		chip.add_child(remove_btn)
+		attachments_vbox.add_child(chip)
+
+func _remove_attachment_at(index: int) -> void:
+	if index < 0 or index >= _pending_attachments.size():
+		return
+	_pending_attachments.remove_at(index)
+	_refresh_attachments_ui()
+
+func _remove_pending_images() -> void:
+	var kept: Array = []
+	for item in _pending_attachments:
+		if item is Dictionary and String(item.get("kind", "")) != "image":
+			kept.append(item)
+	_pending_attachments = kept
+	_refresh_attachments_ui()
+
+func _clear_pending_attachments() -> void:
+	_pending_attachments.clear()
+	_refresh_attachments_ui()
+
+func _add_attachment_from_path(path: String, as_image: bool) -> void:
+	if as_image and attach_image_button.disabled:
+		status_label.text = _tr("ui.vision_unsupported")
+		return
+	var result: Dictionary = ComposerAttachments.create_attachment_from_path(path)
+	if not bool(result.get("ok", false)):
+		status_label.text = String(result.get("error", _tr("ui.attach_failed")))
+		return
+	if as_image and String(result.get("kind", "")) != "image":
+		status_label.text = _tr("ui.attach_not_image")
+		return
+	if not as_image and String(result.get("kind", "")) == "image":
+		if attach_image_button.disabled:
+			status_label.text = _tr("ui.vision_unsupported")
+			return
+	for existing in _pending_attachments:
+		if existing is Dictionary and String(existing.get("path", "")) == String(result.get("path", "")):
+			status_label.text = _tr("ui.attach_duplicate")
+			return
+	_pending_attachments.append(result)
+	_refresh_attachments_ui()
+
+func _on_attach_file_pressed() -> void:
+	attach_file_dialog.popup_centered_ratio(0.6)
+
+func _on_attach_image_pressed() -> void:
+	if attach_image_button.disabled:
+		status_label.text = _tr("ui.vision_unsupported")
+		return
+	attach_image_dialog.popup_centered_ratio(0.6)
+
+func _on_attach_file_selected(path: String) -> void:
+	_add_attachment_from_path(path, false)
+
+func _on_attach_image_selected(path: String) -> void:
+	_add_attachment_from_path(path, true)
+
 func initialize_ui() -> void:
 	setup_skills_dropdown()
 	context_checkbox.button_pressed = bool(config_manager.get_setting("include_project_context", true))
 	tools_checkbox.button_pressed = bool(config_manager.get_setting("enable_editor_tools", true))
 	agent_checkbox.button_pressed = bool(config_manager.get_setting("enable_agent_loop", true))
 	thinking_checkbox.button_pressed = bool(config_manager.get_setting("enable_thinking", true))
+	vision_checkbox.button_pressed = bool(config_manager.get_setting("enable_vision", true))
+	_update_capability_toggles()
 	_update_harness_label()
 	status_label.text = _tr("ui.status_loading_models")
 	
 	send_button.pressed.connect(_on_send_button_pressed)
+	attach_file_button.pressed.connect(_on_attach_file_pressed)
+	attach_image_button.pressed.connect(_on_attach_image_pressed)
+	attach_file_dialog.file_selected.connect(_on_attach_file_selected)
+	attach_image_dialog.file_selected.connect(_on_attach_image_selected)
 	config_button.pressed.connect(_on_config_button_pressed)
 	new_agent_button.pressed.connect(_on_new_agent_pressed)
 	history_button.pressed.connect(_toggle_history_popup)
@@ -1559,6 +2057,8 @@ func initialize_ui() -> void:
 	tools_checkbox.toggled.connect(_on_tools_toggled)
 	agent_checkbox.toggled.connect(_on_agent_toggled)
 	thinking_checkbox.toggled.connect(_on_thinking_toggled)
+	vision_checkbox.toggled.connect(_on_vision_toggled)
+	model_dropdown.item_selected.connect(_on_model_selected)
 	prompt_text_edit.gui_input.connect(_on_prompt_gui_input)
 	prompt_text_edit.text_changed.connect(_on_prompt_text_changed)
 	prompt_text_edit.caret_changed.connect(_update_autocomplete)
@@ -1596,13 +2096,17 @@ func _on_prompt_gui_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _get_query_options() -> Dictionary:
+	var caps: Dictionary = _get_selected_capabilities()
+	var thinking_enabled: bool = thinking_checkbox.button_pressed and bool(caps.get("thinking", false))
+	var vision_enabled: bool = vision_checkbox.button_pressed and bool(caps.get("vision", false))
 	return {
 		"include_context": context_checkbox.button_pressed,
 		"enable_tools": tools_checkbox.button_pressed,
-		"enable_thinking": thinking_checkbox.button_pressed,
+		"enable_thinking": thinking_enabled,
+		"enable_vision": vision_enabled,
 		"enable_agent_loop": agent_checkbox.button_pressed,
 		"max_agent_steps": config_manager.get_setting("agent_max_steps", 8),
-		"context_depth": config_manager.get_setting("context_depth", "intermediate")
+		"context_depth": config_manager.get_setting("context_depth", "intermediate"),
 	}
 
 func _update_harness_label() -> void:
@@ -1655,6 +2159,11 @@ func setup_model_dropdown() -> void:
 	
 	model_dropdown.select(selected_index)
 	_style_option_popup(model_dropdown.get_popup())
+	_update_capability_toggles()
+
+func _on_model_selected(_index: int) -> void:
+	_update_capability_toggles()
+	_update_harness_label()
 
 func _get_selected_model_entry() -> Dictionary:
 	if model_dropdown.item_count == 0:
@@ -1690,10 +2199,10 @@ func setup_skills_dropdown() -> void:
 
 func _on_send_button_pressed() -> void:
 	var prompt: String = prompt_text_edit.text.strip_edges()
-	if _request_busy and prompt.is_empty():
+	if _request_busy and prompt.is_empty() and _pending_attachments.is_empty():
 		_cancel_current_request()
 		return
-	if prompt.is_empty():
+	if prompt.is_empty() and _pending_attachments.is_empty():
 		status_label.text = _tr("ui.status_write_prompt")
 		return
 	
@@ -1708,29 +2217,50 @@ func _on_send_button_pressed() -> void:
 		status_label.text = _tr("ui.status_enable_provider")
 		return
 	
-	chat_history.add_message("user", prompt)
-	_append_user_message(prompt)
+	var image_count: int = ComposerAttachments.get_image_attachments(_pending_attachments).size()
+	if image_count > 0 and (vision_checkbox.disabled or not vision_checkbox.button_pressed):
+		status_label.text = _tr("ui.vision_required_for_images")
+		return
+	
+	var attachments_copy: Array = _pending_attachments.duplicate(true)
+	var api_prompt: String = prompt
+	if api_prompt.is_empty() and not attachments_copy.is_empty():
+		api_prompt = _tr("ui.analyze_attachments_prompt")
+	var display_prompt: String = prompt if not prompt.is_empty() else _tr("ui.message_attachments_only")
+	
+	chat_history.add_message("user", api_prompt, false, attachments_copy)
+	_append_user_message(prompt if not prompt.is_empty() else display_prompt, attachments_copy)
 	prompt_text_edit.clear()
 	_hide_autocomplete()
 	var options: Dictionary = _get_query_options()
 	options["model_id"] = model_id
 	options["provider_id"] = provider_id
+	options["message_attachments"] = attachments_copy
 	if mention_resolver:
-		options["attached_context"] = mention_resolver.build_attached_context(prompt)
+		var attached: String = mention_resolver.build_attached_context(prompt)
+		var file_block: String = ComposerAttachments.build_file_context_block(attachments_copy)
+		if not file_block.is_empty():
+			attached = attached if not attached.is_empty() else file_block
+			if not attached.is_empty() and not file_block.is_empty() and file_block not in attached:
+				attached += "\n\n" + file_block
+			elif attached.is_empty():
+				attached = file_block
+		options["attached_context"] = attached
 	if chat_history:
 		options["conversation_messages"] = chat_history.get_active_messages()
+	_clear_pending_attachments()
 	_update_harness_label()
 	_refresh_history_ui()
 	
 	if _request_busy:
-		ai_handler.query_provider(provider_id, prompt, options)
+		ai_handler.query_provider(provider_id, api_prompt, options)
 		_update_queue_status()
 		return
 	
 	_begin_assistant_message()
 	_show_assistant_status(_tr("ui.thinking"), _tr("ui.generating"))
 	_set_request_busy(true)
-	ai_handler.query_provider(provider_id, prompt, options)
+	ai_handler.query_provider(provider_id, api_prompt, options)
 
 func _cancel_current_request() -> void:
 	if ai_handler:
@@ -1808,6 +2338,8 @@ func _on_configuration_saved() -> void:
 	tools_checkbox.button_pressed = bool(config_manager.get_setting("enable_editor_tools", true))
 	agent_checkbox.button_pressed = bool(config_manager.get_setting("enable_agent_loop", true))
 	thinking_checkbox.button_pressed = bool(config_manager.get_setting("enable_thinking", true))
+	vision_checkbox.button_pressed = bool(config_manager.get_setting("enable_vision", true))
+	_update_capability_toggles()
 	_update_harness_label()
 	if locale_manager:
 		locale_manager.reload_locale()
@@ -1838,7 +2370,21 @@ func _on_agent_toggled(enabled: bool) -> void:
 	_update_harness_label()
 
 func _on_thinking_toggled(enabled: bool) -> void:
-	config_manager.set_setting("enable_thinking", enabled)
+	if _syncing_capability_toggles:
+		return
+	if not thinking_checkbox.disabled:
+		config_manager.set_setting("enable_thinking", enabled)
+	_update_harness_label()
+
+func _on_vision_toggled(enabled: bool) -> void:
+	if _syncing_capability_toggles:
+		return
+	if vision_checkbox.disabled:
+		vision_checkbox.button_pressed = false
+		return
+	config_manager.set_setting("enable_vision", enabled)
+	if not enabled:
+		_remove_pending_images()
 	_update_harness_label()
 
 func _on_query_started(provider_id: String) -> void:

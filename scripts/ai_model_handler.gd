@@ -14,6 +14,8 @@ signal response_retry_attempt(attempt: int, max_attempts: int, reason: String)
 
 const MAX_CONVERSATION_MESSAGES := 24
 const DEFAULT_RESPONSE_RETRIES := 2
+const ModelCapabilities := preload("res://addons/ai_assistant_plugin/scripts/model_capabilities.gd")
+const ComposerAttachments := preload("res://addons/ai_assistant_plugin/scripts/composer_attachments.gd")
 
 var config_manager: RefCounted = null
 var project_context: RefCounted = null
@@ -41,6 +43,8 @@ var _agent_last_response_signature: String = ""
 var _agent_tools_executed: int = 0
 var _agent_act_nudges: int = 0
 var _agent_failed_batches: int = 0
+var _agent_code_only: bool = false
+var _agent_read_only_streak: int = 0
 var _active_user_language: String = "es"
 var _request_queue: Array = []
 var _is_processing: bool = false
@@ -167,6 +171,11 @@ func _start_request(request_item: Dictionary) -> void:
 			query_failed.emit("Cursor local_proxy requiere endpoint URL")
 			return
 	
+	if provider_id in ["openrouter", "kimi", "minimax"] and String(provider_cfg.get("api_key", "")).strip_edges().is_empty():
+		_finish_request_cycle()
+		query_failed.emit("%s requiere API key" % config_manager.get_provider_label(provider_id))
+		return
+	
 	_pending_provider_id = provider_id
 	_pending_enable_tools = bool(options.get("enable_tools", config_manager.get_setting("enable_editor_tools", true)))
 	_pending_options = options
@@ -254,8 +263,17 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
 	_agent_failed_batches = 0
+	_agent_code_only = _user_wants_code_only(user_prompt)
+	_agent_read_only_streak = 0
 	_active_user_language = _detect_language(user_prompt)
 	_agent_system_prompt = _build_system_prompt(user_prompt, options, true)
+	if _agent_code_only:
+		_agent_system_prompt += (
+			"\n\n## Code-only request\n"
+			+ "The user wants GDScript code to paste manually — do NOT call create_script or other write tools. "
+			+ "Reply with a complete ```gdscript code block using exact node paths from @ mentions / attachments. "
+			+ "At most ONE inspect tool if a path is truly unknown, then answer with code and short steps."
+		)
 	_agent_messages = _build_conversation_messages(user_prompt, options)
 	agent_step_update.emit(_agent_step, _agent_max_steps, "Starting agent loop...")
 	_send_agent_request()
@@ -284,9 +302,98 @@ func _build_conversation_messages(user_prompt: String, options: Dictionary) -> A
 			messages.append({"role": "user", "content": content})
 		elif role == "assistant" and not bool(item.get("is_error", false)):
 			messages.append({"role": "assistant", "content": content})
-	if messages.is_empty() or String(messages[-1].get("content", "")) != user_prompt:
-		messages.append({"role": "user", "content": user_prompt})
+	if messages.is_empty() or _message_plain_text(messages[-1]) != user_prompt:
+		messages.append(_make_user_message_dict(user_prompt, options))
+	elif not options.get("message_attachments", []).is_empty():
+		messages[-1] = _make_user_message_dict(user_prompt, options)
 	return messages
+
+func _make_user_message_dict(user_prompt: String, options: Dictionary) -> Dictionary:
+	var msg: Dictionary = {"role": "user", "content": user_prompt}
+	var attachments: Array = options.get("message_attachments", [])
+	if attachments.is_empty():
+		return msg
+	if bool(options.get("enable_vision", false)):
+		var images: Array = ComposerAttachments.get_image_attachments(attachments)
+		if not images.is_empty():
+			msg["images"] = images
+	return msg
+
+func _message_plain_text(message: Dictionary) -> String:
+	var content: Variant = message.get("content", "")
+	if content is String:
+		return content
+	if content is Array:
+		for part in content:
+			if part is Dictionary and String(part.get("type", "")) == "text":
+				return String(part.get("text", ""))
+	return String(content)
+
+func _transform_messages_for_provider(provider_id: String, messages: Array) -> Array:
+	var out: Array = []
+	for message in messages:
+		if not message is Dictionary:
+			continue
+		var role: String = String(message.get("role", "user"))
+		var content: Variant = message.get("content", "")
+		var images: Array = message.get("images", [])
+		if role != "user" or images.is_empty():
+			out.append({"role": role, "content": _message_plain_text(message) if content is Array else String(content)})
+			continue
+		match provider_id:
+			"ollama":
+				var ollama_msg: Dictionary = {
+					"role": "user",
+					"content": String(content),
+					"images": _image_base64_list(images),
+				}
+				out.append(ollama_msg)
+			"anthropic":
+				out.append({"role": role, "content": _anthropic_multimodal_parts(String(content), images)})
+			"gemini":
+				out.append({"role": role, "content": String(content), "images": images})
+			_:
+				out.append({"role": role, "content": _openai_multimodal_parts(String(content), images)})
+	return out
+
+func _image_base64_list(images: Array) -> Array:
+	var encoded: Array = []
+	for item in images:
+		if item is Dictionary:
+			var b64: String = String(item.get("base64", ""))
+			if not b64.is_empty():
+				encoded.append(b64)
+	return encoded
+
+func _openai_multimodal_parts(text: String, images: Array) -> Array:
+	var parts: Array = [{"type": "text", "text": text}]
+	for item in images:
+		if not item is Dictionary:
+			continue
+		var b64: String = String(item.get("base64", ""))
+		var mime: String = String(item.get("mime", "image/png"))
+		if b64.is_empty():
+			continue
+		parts.append({
+			"type": "image_url",
+			"image_url": {"url": "data:%s;base64,%s" % [mime, b64]},
+		})
+	return parts
+
+func _anthropic_multimodal_parts(text: String, images: Array) -> Array:
+	var parts: Array = [{"type": "text", "text": text}]
+	for item in images:
+		if not item is Dictionary:
+			continue
+		var b64: String = String(item.get("base64", ""))
+		var mime: String = String(item.get("mime", "image/png"))
+		if b64.is_empty():
+			continue
+		parts.append({
+			"type": "image",
+			"source": {"type": "base64", "media_type": mime, "data": b64},
+		})
+	return parts
 
 func _sanitize_message_for_context(text: String) -> String:
 	var cleaned: String = text
@@ -508,13 +615,14 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 	var temperature: float = float(config_manager.get_setting("temperature", 0.7))
 	var max_tokens: int = int(config_manager.get_setting("max_tokens", 4096))
 	var model_name: String = String(provider_cfg.get("model", "default"))
+	var api_messages: Array = _transform_messages_for_provider(provider_id, messages)
 	
 	match provider_id:
 		"ollama":
 			var enable_thinking: bool = bool(
 				options.get("enable_thinking", config_manager.get_setting("enable_thinking", true))
 			)
-			var ollama_messages: Array = _prepend_system_message(system_prompt, messages)
+			var ollama_messages: Array = _prepend_system_message(system_prompt, api_messages)
 			# Ollama defaults num_ctx to ~4096 and silently TRUNCATES longer prompts,
 			# which makes models emit garbage like "<". Size the context to the prompt.
 			# Ollama usa num_ctx ~4096 por defecto y TRUNCA prompts más largos en silencio,
@@ -532,32 +640,32 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 			}
 			# Only send think to models that support it (qwen2.5-coder returns HTTP 400 otherwise).
 			# Solo enviar think a modelos compatibles (qwen2.5-coder devuelve HTTP 400 si no).
-			if _ollama_supports_thinking(model_name):
+			if ModelCapabilities.supports_thinking(provider_id, model_name):
 				payload["think"] = enable_thinking
 			return payload
 		"gemini":
-			return _build_gemini_payload(model_name, provider_cfg, system_prompt, messages, max_tokens, temperature)
+			return _build_gemini_payload(model_name, provider_cfg, system_prompt, api_messages, max_tokens, temperature)
 		"anthropic":
 			return {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
 				"system": system_prompt,
-				"messages": messages
+				"messages": api_messages
 			}
-		"cursor", "openai", "lmstudio":
+		"cursor", "openai", "lmstudio", "openrouter", "kimi", "minimax":
 			return {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
-				"messages": _prepend_system_message(system_prompt, messages)
+				"messages": _prepend_system_message(system_prompt, api_messages)
 			}
 		_:
 			return {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
-				"messages": _prepend_system_message(system_prompt, messages)
+				"messages": _prepend_system_message(system_prompt, api_messages)
 			}
 
 func _build_gemini_payload(
@@ -572,10 +680,20 @@ func _build_gemini_payload(
 	for message in messages:
 		if message is Dictionary:
 			var role: String = "user" if String(message.get("role", "user")) == "user" else "model"
-			contents.append({
-				"role": role,
-				"parts": [{"text": String(message.get("content", ""))}]
-			})
+			var parts: Array = []
+			var text: String = String(message.get("content", ""))
+			if not text.is_empty():
+				parts.append({"text": text})
+			var images: Array = message.get("images", [])
+			for item in images:
+				if item is Dictionary:
+					var b64: String = String(item.get("base64", ""))
+					var mime: String = String(item.get("mime", "image/png"))
+					if not b64.is_empty():
+						parts.append({"inlineData": {"mimeType": mime, "data": b64}})
+			if parts.is_empty():
+				parts.append({"text": text})
+			contents.append({"role": role, "parts": parts})
 	return {
 		"systemInstruction": {"parts": [{"text": system_prompt}]},
 		"contents": contents,
@@ -603,7 +721,13 @@ func _messages_to_prompt(system_prompt: String, messages: Array) -> String:
 func _build_headers(provider_id: String, provider_cfg: Dictionary) -> PackedStringArray:
 	var headers: PackedStringArray = PackedStringArray(["Content-Type: application/json"])
 	match provider_id:
-		"openai", "lmstudio", "cursor":
+		"openrouter":
+			var openrouter_key: String = String(provider_cfg.get("api_key", "")).strip_edges()
+			if not openrouter_key.is_empty():
+				headers.append("Authorization: Bearer %s" % openrouter_key)
+			headers.append("HTTP-Referer: https://github.com/sancheznot/Godot-AI-Assistant")
+			headers.append("X-OpenRouter-Title: Golem-AI")
+		"openai", "lmstudio", "cursor", "kimi", "minimax":
 			var api_key: String = String(provider_cfg.get("api_key", ""))
 			if not api_key.is_empty():
 				headers.append("Authorization: Bearer %s" % api_key)
@@ -727,7 +851,26 @@ func _handle_agent_response(text: String) -> void:
 		_agent_log.append("### Tool parse warning (step %d)\nNo se pudieron ejecutar los bloques JSON detectados." % _agent_step)
 	
 	if not tool_results.is_empty():
-		_agent_log.append("### Tool results (step %d)\n%s" % [_agent_step, JSON.stringify(tool_results, "\t")])
+		var compact_results: String = (
+			editor_tools.compact_tool_results_for_context(tool_results)
+			if editor_tools else JSON.stringify(tool_results, "\t")
+		)
+		_agent_log.append("### Tool results (step %d)\n%s" % [_agent_step, compact_results])
+	
+	if _agent_code_only and _response_has_code_block(content):
+		_finish_agent_loop(true, _compose_agent_output())
+		return
+	
+	var batch_read_only: bool = (
+		not tool_results.is_empty()
+		and ok_tool_count > 0
+		and editor_tools != null
+		and editor_tools.batch_is_read_only_only(tool_results)
+	)
+	if batch_read_only:
+		_agent_read_only_streak += 1
+	elif ok_tool_count > 0:
+		_agent_read_only_streak = 0
 	
 	# Track batches where every tool call failed (e.g. unknown tools). Stop the loop
 	# after two such batches instead of burning all steps re-trying the same broken plan.
@@ -749,12 +892,15 @@ func _handle_agent_response(text: String) -> void:
 		)
 		return
 	
-	# 1) Tools executed (any) and steps remaining -> feed results back, continue.
+	# 1) Tools executed (any) and steps remaining -> feed compact results back, continue.
 	if not tool_results.is_empty() and _agent_step < _agent_max_steps:
 		var followup: String = _build_tool_followup(tool_results)
 		_agent_messages.append({"role": "user", "content": followup})
 		_agent_step += 1
-		agent_step_update.emit(_agent_step, _agent_max_steps, "Ejecutadas %d tool(s), continuando…" % tool_results.size())
+		var summary: String = "Ejecutadas %d tool(s), continuando…" % tool_results.size()
+		if _agent_read_only_streak >= 2:
+			summary = "Inspección repetida — actúa o entrega código"
+		agent_step_update.emit(_agent_step, _agent_max_steps, summary)
 		_send_agent_request()
 		return
 	
@@ -792,7 +938,12 @@ func _handle_agent_response(text: String) -> void:
 	
 	if _pending_enable_tools:
 		var nudge: String
-		if _agent_tools_executed == 0:
+		if _agent_code_only and _agent_read_only_streak >= 1:
+			nudge = (
+				"Ya inspeccionaste la escena. Responde AHORA con el bloque ```gdscript completo "
+				+ "y pasos breves. No uses más tools."
+			)
+		elif _agent_tools_executed == 0:
 			_agent_act_nudges += 1
 			if _agent_act_nudges > 3:
 				_finish_agent_loop(
@@ -818,16 +969,30 @@ func _handle_agent_response(text: String) -> void:
 	_finish_agent_loop(true, _compose_agent_output())
 
 func _build_tool_followup(tool_results: Array) -> String:
+	var compact: String = (
+		editor_tools.compact_tool_results_for_context(tool_results)
+		if editor_tools else JSON.stringify(tool_results, "\t")
+	)
 	var parts: PackedStringArray = [
-		"Tool execution results:",
-		JSON.stringify(tool_results, "\t")
+		"Tool execution results (compact):",
+		compact,
 	]
-	if editor_tools:
-		var snapshot: Dictionary = editor_tools.execute_tool("get_scene_snapshot", {"max_depth": 6})
-		parts.append("Current scene snapshot after tools:")
-		parts.append(JSON.stringify(snapshot, "\t"))
+	if _agent_read_only_streak >= 2:
+		parts.append(
+			"STOP inspecting repeatedly. You already have enough scene data. "
+			+ "Either call create_script / set_node_property NOW to finish the task, "
+			+ "or reply with a final ```gdscript code block if the user wanted code only."
+		)
+	elif editor_tools and editor_tools.batch_had_mutation(tool_results):
+		var snapshot: Dictionary = editor_tools.execute_tool("get_scene_snapshot", {"max_depth": 3})
+		if bool(snapshot.get("ok", false)):
+			parts.append("Updated scene index (compact):")
+			parts.append(editor_tools.compact_tool_results_for_context([{
+				"tool": "get_scene_snapshot",
+				"result": snapshot,
+			}]))
 	parts.append(
-		"Continue the task. Call more tools if you need to verify or fix the scene. "
+		"Continue the task. Prefer ONE action per step. "
 		+ "If the task is complete, reply with a final summary only and do NOT include <tool_call> blocks."
 		+ _language_hint_suffix()
 	)
@@ -848,6 +1013,8 @@ func _reset_agent_state() -> void:
 	_agent_failed_batches = 0
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
+	_agent_code_only = false
+	_agent_read_only_streak = 0
 	_agent_messages.clear()
 	_agent_log.clear()
 	_agent_provider_id = ""
@@ -869,14 +1036,7 @@ func _response_has_tool_calls(text: String) -> bool:
 	return regex.search(text) != null
 
 func _ollama_supports_thinking(model_name: String) -> bool:
-	var model_lower: String = model_name.to_lower()
-	var prefixes: PackedStringArray = [
-		"gemma4", "gemma3", "qwen3", "qwq", "deepseek", "gpt-oss", "magistral"
-	]
-	for prefix in prefixes:
-		if model_lower.contains(prefix):
-			return true
-	return false
+	return ModelCapabilities.supports_thinking("ollama", model_name)
 
 func _is_fragment_content(text: String) -> bool:
 	var trimmed: String = text.strip_edges()
@@ -941,20 +1101,37 @@ func _language_hint_suffix() -> String:
 		return " IMPORTANTE: Responde SIEMPRE en español."
 	return " IMPORTANT: Always reply in the user's language (%s)." % _active_user_language
 
+func _user_wants_code_only(prompt: String) -> bool:
+	var lower: String = prompt.to_lower()
+	var markers: PackedStringArray = [
+		"dame el codigo", "dame el código", "solo el codigo", "solo el código",
+		"no te pedi crear", "no me pidas crear", "no crear el script", "no lo crees",
+		"yo lo hago", "para yo hacerlo", "yo lo pego", "yo lo aplico",
+		"give me the code", "just the code", "don't create", "do not create",
+		"don't write the file", "do not write the file", "i'll paste", "i will paste",
+	]
+	for marker in markers:
+		if lower.contains(marker):
+			return true
+	return false
+
+func _response_has_code_block(text: String) -> bool:
+	return text.contains("```gdscript") or text.contains("```csharp")
+
 func _act_now_nudge() -> String:
 	# Force the model to perform real edits instead of only inspecting/summarizing.
 	# Forzar al modelo a hacer cambios reales en lugar de solo inspeccionar/resumir.
 	if _active_user_language == "es":
 		return (
-			"Todavía NO has hecho ningún cambio en la escena. No te limites a inspeccionar ni a resumir. "
-			+ "Ejecuta AHORA las tool calls necesarias para completar la tarea del usuario "
-			+ "(por ejemplo instance_scene para colocar el .tscn, o add_node / create_box_mesh). "
+			"Todavía NO has hecho ningún cambio en la escena. No repitas get_scene_snapshot + get_scene_tree + inspect_node. "
+			+ "Si la tarea es un script, llama create_script AHORA con attach_to y content completo. "
+			+ "Si el usuario pidió solo código, responde con un bloque ```gdscript. "
 			+ "Usa exactamente el formato <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
 		)
 	return (
-		"You have NOT made any scene changes yet. Do not just inspect or summarize. "
-		+ "Execute the tool calls needed to complete the user's task NOW "
-		+ "(e.g. instance_scene to place the .tscn, or add_node / create_box_mesh). "
+		"You have NOT made any scene changes yet. Do not repeat get_scene_snapshot + get_scene_tree + inspect_node. "
+		+ "For scripts, call create_script NOW with attach_to and full content. "
+		+ "If the user wanted code only, reply with a ```gdscript block. "
 		+ "Use exactly the format <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
 	)
 
@@ -1093,7 +1270,17 @@ func _extract_response_text(provider_id: String, parsed: Variant) -> String:
 				return ""
 			var first: Variant = choices[0]
 			if first is Dictionary:
-				if first.has("message"):
-					return String(first.message.get("content", ""))
-				return String(first.get("text", ""))
+				return _openai_choice_to_text(first)
 			return ""
+
+func _openai_choice_to_text(choice: Dictionary) -> String:
+	if choice.has("message") and choice.message is Dictionary:
+		var message: Dictionary = choice.message
+		var content: String = String(message.get("content", "")).strip_edges()
+		var reasoning: String = String(message.get("reasoning_content", "")).strip_edges()
+		if not reasoning.is_empty() and content.is_empty():
+			return reasoning
+		if not reasoning.is_empty() and not content.is_empty():
+			return "<thinking>\n%s\n</thinking>\n\n%s" % [reasoning, content]
+		return content
+	return String(choice.get("text", "")).strip_edges()

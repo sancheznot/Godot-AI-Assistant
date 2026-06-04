@@ -562,7 +562,7 @@ func _make_provider_section(provider_id: String) -> PanelContainer:
 	model_row.add_child(refresh_models_btn)
 	grid.add_child(model_row)
 	
-	if provider_id in ["openai", "anthropic", "lmstudio", "cursor", "gemini"]:
+	if provider_id in ["openai", "anthropic", "lmstudio", "cursor", "gemini", "openrouter", "kimi", "minimax"]:
 		grid.add_child(_make_field_label(_tr("config.api_key")))
 		var api_key := LineEdit.new()
 		api_key.name = "ApiKey"
@@ -590,6 +590,27 @@ func _make_provider_section(provider_id: String) -> PanelContainer:
 		hint.add_theme_font_size_override("font_size", 11)
 		hint.add_theme_color_override("font_color", COLOR_MUTED)
 		box.add_child(hint)
+	elif provider_id == "openrouter":
+		var openrouter_hint := Label.new()
+		openrouter_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		openrouter_hint.text = _tr("config.openrouter_hint")
+		openrouter_hint.add_theme_font_size_override("font_size", 11)
+		openrouter_hint.add_theme_color_override("font_color", COLOR_MUTED)
+		box.add_child(openrouter_hint)
+	elif provider_id == "kimi":
+		var kimi_hint := Label.new()
+		kimi_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		kimi_hint.text = _tr("config.kimi_hint")
+		kimi_hint.add_theme_font_size_override("font_size", 11)
+		kimi_hint.add_theme_color_override("font_color", COLOR_MUTED)
+		box.add_child(kimi_hint)
+	elif provider_id == "minimax":
+		var minimax_hint := Label.new()
+		minimax_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		minimax_hint.text = _tr("config.minimax_hint")
+		minimax_hint.add_theme_font_size_override("font_size", 11)
+		minimax_hint.add_theme_color_override("font_color", COLOR_MUTED)
+		box.add_child(minimax_hint)
 	
 	provider_sections[provider_id] = grid
 	return panel

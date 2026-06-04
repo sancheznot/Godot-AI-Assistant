@@ -4,10 +4,16 @@ extends RefCounted
 
 const CONFIG_PATH := "res://addons/ai_assistant_plugin/config/plugin_config.json"
 
-const PROVIDER_IDS := ["ollama", "lmstudio", "openai", "anthropic", "cursor", "gemini"]
+const PROVIDER_IDS := [
+	"ollama", "lmstudio", "openrouter", "kimi", "minimax",
+	"openai", "anthropic", "cursor", "gemini",
+]
 const PROVIDER_LABELS := {
 	"ollama": "Ollama",
 	"lmstudio": "LM Studio",
+	"openrouter": "OpenRouter",
+	"kimi": "Kimi",
+	"minimax": "MiniMax",
 	"openai": "OpenAI",
 	"anthropic": "Anthropic",
 	"cursor": "Cursor",
@@ -66,6 +72,24 @@ func create_default_config() -> void:
 				"model": "local-model",
 				"api_key": ""
 			},
+			"openrouter": {
+				"enabled": false,
+				"api_key": "",
+				"api_endpoint": "https://openrouter.ai/api/v1/chat/completions",
+				"model": "openrouter/auto"
+			},
+			"kimi": {
+				"enabled": false,
+				"api_key": "",
+				"api_endpoint": "https://api.moonshot.ai/v1/chat/completions",
+				"model": "kimi-k2.5"
+			},
+			"minimax": {
+				"enabled": false,
+				"api_key": "",
+				"api_endpoint": "https://api.minimax.io/v1/chat/completions",
+				"model": "MiniMax-M2.5"
+			},
 			"openai": {
 				"enabled": false,
 				"api_key": "",
@@ -100,6 +124,7 @@ func create_default_config() -> void:
 			"enable_editor_tools": true,
 			"enable_agent_loop": true,
 			"enable_thinking": true,
+			"enable_vision": true,
 			"ui_language": "auto",
 			"agent_max_steps": 8,
 			"max_response_retries": 3,
@@ -147,6 +172,27 @@ func _migrate_legacy_config() -> void:
 					"model": "composer-2.5",
 					"api_mode": "local_proxy"
 				}
+			elif provider_id == "openrouter":
+				models["openrouter"] = {
+					"enabled": false,
+					"api_key": "",
+					"api_endpoint": "https://openrouter.ai/api/v1/chat/completions",
+					"model": "openrouter/auto"
+				}
+			elif provider_id == "kimi":
+				models["kimi"] = {
+					"enabled": false,
+					"api_key": "",
+					"api_endpoint": "https://api.moonshot.ai/v1/chat/completions",
+					"model": "kimi-k2.5"
+				}
+			elif provider_id == "minimax":
+				models["minimax"] = {
+					"enabled": false,
+					"api_key": "",
+					"api_endpoint": "https://api.minimax.io/v1/chat/completions",
+					"model": "MiniMax-M2.5"
+				}
 			continue
 		var provider_cfg: Dictionary = models[provider_id]
 		if not provider_cfg.has("model"):
@@ -178,6 +224,8 @@ func _migrate_legacy_config() -> void:
 		settings["skills_path"] = "res://addons/ai_assistant_plugin/skills"
 	if not settings.has("enable_thinking"):
 		settings["enable_thinking"] = true
+	if not settings.has("enable_vision"):
+		settings["enable_vision"] = true
 	if not settings.has("harness_base_context_path"):
 		settings["harness_base_context_path"] = "res://addons/ai_assistant_plugin/harness/base_context.md"
 	if not settings.has("harness_thinking_path"):
@@ -197,6 +245,12 @@ func _default_model_for_provider(provider_id: String) -> String:
 			return "llama3.2"
 		"lmstudio":
 			return "local-model"
+		"openrouter":
+			return "openrouter/auto"
+		"kimi":
+			return "kimi-k2.5"
+		"minimax":
+			return "MiniMax-M2.5"
 		"openai":
 			return "gpt-4o-mini"
 		"anthropic":

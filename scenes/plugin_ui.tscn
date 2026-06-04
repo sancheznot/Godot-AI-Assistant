@@ -120,6 +120,17 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 2
 
+[node name="AttachmentsPanel" type="HBoxContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="AttachmentsVBox" type="HBoxContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/AttachmentsPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
 [node name="PromptTextEdit" type="TextEdit" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
 custom_minimum_size = Vector2(0, 64)
 layout_mode = 2
@@ -137,6 +148,20 @@ theme_override_constants/separation = 4
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 4
+
+[node name="AttachFileButton" type="Button" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary"]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+flat = true
+tooltip_text = "Attach file"
+text = "📎"
+
+[node name="AttachImageButton" type="Button" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary"]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+flat = true
+tooltip_text = "Attach image"
+text = "🖼"
 
 [node name="ModelDropdown" type="OptionButton" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary"]
 custom_minimum_size = Vector2(96, 28)
@@ -197,6 +222,11 @@ layout_mode = 2
 button_pressed = true
 text = "Think"
 
+[node name="VisionCheckBox" type="CheckBox" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles"]
+layout_mode = 2
+button_pressed = true
+text = "Vision"
+
 [node name="StatusBar" type="PanelContainer" parent="RootVBox"]
 layout_mode = 2
 size_flags_horizontal = 3
@@ -249,6 +279,30 @@ custom_minimum_size = Vector2(0, 30)
 layout_mode = 2
 placeholder_text = "Search Agents..."
 
+[node name="HistoryBulkBar" type="HBoxContainer" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="HistorySelectAllCheckBox" type="CheckBox" parent="HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar"]
+layout_mode = 2
+text = "All"
+
+[node name="HistorySelectionLabel" type="Label" parent="HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+clip_text = true
+text = "0 selected"
+
+[node name="HistoryBulkArchiveButton" type="Button" parent="HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar"]
+layout_mode = 2
+disabled = true
+text = "Archive"
+
+[node name="HistoryBulkDeleteButton" type="Button" parent="HistoryPopup/HistoryMargin/HistoryVBox/HistoryBulkBar"]
+layout_mode = 2
+disabled = true
+text = "Delete"
+
 [node name="HistoryScroll" type="ScrollContainer" parent="HistoryPopup/HistoryMargin/HistoryVBox"]
 custom_minimum_size = Vector2(0, 260)
 layout_mode = 2
@@ -272,3 +326,16 @@ layout_mode = 2
 theme_override_constants/separation = 2
 
 [node name="MoreMenu" type="PopupMenu" parent="."]
+
+[node name="AttachFileDialog" type="FileDialog" parent="."]
+access = 2
+file_mode = 0
+title = "Attach file"
+size = Vector2i(700, 450)
+
+[node name="AttachImageDialog" type="FileDialog" parent="."]
+access = 2
+file_mode = 0
+filters = PackedStringArray("*.png, *.jpg, *.jpeg, *.webp, *.gif, *.bmp ; Images")
+title = "Attach image"
+size = Vector2i(700, 450)

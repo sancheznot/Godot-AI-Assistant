@@ -72,7 +72,10 @@ func replace_active_session(title: String = "Nuevo chat") -> void:
 	save_history()
 
 func get_active_session_title() -> String:
-	var session: Dictionary = _find_session(active_session_id)
+	return get_session_title(active_session_id)
+
+func get_session_title(session_id: String) -> String:
+	var session: Dictionary = _find_session(session_id)
 	if session.is_empty():
 		return "Chat"
 	return String(session.get("title", "Chat"))
@@ -108,20 +111,45 @@ func archive_session(session_id: String, archived: bool) -> bool:
 	return true
 
 func delete_session(session_id: String) -> bool:
-	var index: int = -1
-	for i in sessions.size():
-		if sessions[i] is Dictionary and String(sessions[i].get("id", "")) == session_id:
-			index = i
-			break
-	if index < 0:
-		return false
-	sessions.remove_at(index)
-	if active_session_id == session_id:
-		active_session_id = String(sessions[0].get("id", "")) if not sessions.is_empty() else ""
-		if active_session_id.is_empty():
+	return delete_sessions([session_id]) > 0
+
+func delete_sessions(session_ids: Array) -> int:
+	var id_set: Dictionary = {}
+	for raw_id in session_ids:
+		var session_id: String = String(raw_id).strip_edges()
+		if not session_id.is_empty():
+			id_set[session_id] = true
+	if id_set.is_empty():
+		return 0
+	var removed: int = 0
+	var kept: Array = []
+	for session in sessions:
+		if session is Dictionary:
+			var session_id: String = String(session.get("id", ""))
+			if id_set.has(session_id):
+				removed += 1
+			else:
+				kept.append(session)
+	if removed == 0:
+		return 0
+	sessions = kept
+	if id_set.has(active_session_id) or _find_session(active_session_id).is_empty():
+		if sessions.is_empty():
 			create_session("Nuevo chat")
+		else:
+			active_session_id = String(sessions[0].get("id", ""))
 	save_history()
-	return true
+	return removed
+
+func archive_sessions(session_ids: Array, archived: bool) -> int:
+	var changed: int = 0
+	for raw_id in session_ids:
+		if archive_session(String(raw_id), archived):
+			changed += 1
+	return changed
+
+func get_session(session_id: String) -> Dictionary:
+	return _find_session(session_id)
 
 func set_active_session(session_id: String) -> bool:
 	if _find_session(session_id).is_empty():
@@ -134,18 +162,29 @@ func get_active_messages() -> Array:
 	var session: Dictionary = _find_session(active_session_id)
 	return session.get("messages", []).duplicate(true)
 
-func add_message(role: String, content: String, is_error: bool = false) -> void:
+func add_message(role: String, content: String, is_error: bool = false, attachments: Array = []) -> void:
 	var session: Dictionary = _find_session(active_session_id)
 	if session.is_empty():
 		create_session(_title_from_message(content))
 		session = _find_session(active_session_id)
 	var messages: Array = session.get("messages", [])
-	messages.append({
+	var entry: Dictionary = {
 		"role": role,
 		"content": content,
 		"is_error": is_error,
-		"timestamp": Time.get_unix_time_from_system()
-	})
+		"timestamp": Time.get_unix_time_from_system(),
+	}
+	if not attachments.is_empty():
+		var meta: Array = []
+		for item in attachments:
+			if item is Dictionary:
+				meta.append({
+					"kind": String(item.get("kind", "")),
+					"name": String(item.get("name", "")),
+					"path": String(item.get("path", "")),
+				})
+		entry["attachments"] = meta
+	messages.append(entry)
 	if messages.size() > MAX_MESSAGES:
 		messages = messages.slice(messages.size() - MAX_MESSAGES)
 	session["messages"] = messages

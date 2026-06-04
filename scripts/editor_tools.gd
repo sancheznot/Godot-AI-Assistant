@@ -29,9 +29,9 @@ Scene workflow:
 - save_scene: params {}
 - instance_scene: params {"scene_path":"res://prefabs/enemy.tscn","parent_node_path":"","node_name":"Enemy1","position":[0,0,0]}
 
-Inspection:
-- get_scene_tree: params {"max_depth":5}
-- get_scene_snapshot: params {"max_depth":6}
+Inspection (use ONE tool max, prefer @ mentions / attached context first):
+- get_scene_tree: params {"max_depth":3}
+- get_scene_snapshot: params {"max_depth":4}
 - get_selection: params {}
 - inspect_node: params {"node_path":"Root/Child"}
 - list_project_files: params {"extension":".tscn","limit":30}
@@ -59,7 +59,9 @@ Rules:
 - There is NO open_script / save_script / create_node tool. To make a script use create_script (it saves and attaches in one step).
 - To actually perform the task, EXECUTE the editing tools. Do not stop after only inspecting and do not repeat the same plan.
 - Match the script's `extends` to the target node type (inspect_node if unsure).
-- Inspect the scene only when you truly need info, then act.
+- Inspect the scene only when you truly need info, then act immediately (create_script, set_node_property, etc.).
+- If the user asks for code to paste themselves ("dame el código", "yo lo hago"), reply with a ```gdscript block and do NOT call create_script.
+- Use exact node paths from @ mentions and attached context (e.g. Door_02-n1, Floor_1_exit/Door_02-n1).
 - Prefer small, safe edits."""
 
 func list_tool_names() -> Array[String]:
@@ -200,6 +202,135 @@ func parse_and_execute_tool_calls(text: String) -> Array[Dictionary]:
 
 func has_tool_calls(text: String) -> bool:
 	return not extract_tool_call_json_strings(text).is_empty()
+
+const READ_ONLY_TOOLS: Array[String] = [
+	"get_scene_tree",
+	"get_scene_snapshot",
+	"inspect_node",
+	"get_selection",
+	"list_project_files",
+	"get_tilemap_cells",
+]
+
+const MUTATING_TOOLS: Array[String] = [
+	"create_script",
+	"add_node",
+	"instance_scene",
+	"set_node_property",
+	"move_node_3d",
+	"move_node_2d",
+	"scale_node_3d",
+	"scale_node_2d",
+	"rotate_node_3d",
+	"create_box_mesh",
+	"set_tilemap_cell",
+	"create_scene",
+	"save_scene",
+]
+
+func is_read_only_tool(tool_name: String) -> bool:
+	return tool_name in READ_ONLY_TOOLS
+
+func is_mutating_tool(tool_name: String) -> bool:
+	return tool_name in MUTATING_TOOLS
+
+func batch_is_read_only_only(tool_results: Array) -> bool:
+	if tool_results.is_empty():
+		return false
+	for entry in tool_results:
+		if not entry is Dictionary:
+			return false
+		if not bool(entry.get("result", {}).get("ok", false)):
+			return false
+		if not is_read_only_tool(String(entry.get("tool", ""))):
+			return false
+	return true
+
+func batch_had_mutation(tool_results: Array) -> bool:
+	for entry in tool_results:
+		if not entry is Dictionary:
+			continue
+		var tool_name: String = String(entry.get("tool", ""))
+		if is_mutating_tool(tool_name) and bool(entry.get("result", {}).get("ok", false)):
+			return true
+	return false
+
+func compact_tool_results_for_context(tool_results: Array) -> String:
+	var compact: Array = []
+	for entry in tool_results:
+		if entry is Dictionary:
+			compact.append(_compact_tool_entry(entry))
+	return JSON.stringify(compact, "\t")
+
+func _compact_tool_entry(entry: Dictionary) -> Dictionary:
+	var tool_name: String = String(entry.get("tool", ""))
+	var result: Variant = entry.get("result", {})
+	if not result is Dictionary:
+		return {"tool": tool_name, "ok": false, "error": "invalid result"}
+	if not bool(result.get("ok", false)):
+		return {"tool": tool_name, "ok": false, "error": String(result.get("error", "failed"))}
+	match tool_name:
+		"get_scene_snapshot", "get_scene_tree":
+			var tree: Dictionary = result.get("snapshot", result.get("tree", {}))
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"scene_path": result.get("scene_path", ""),
+				"node_index": _index_tree_nodes(tree, 50),
+			}
+		"inspect_node":
+			var node: Dictionary = result.get("node", {})
+			var props: Dictionary = node.get("properties", {})
+			var slim_props: Dictionary = {}
+			for key in ["script", "visible", "position", "rotation", "scale"]:
+				if props.has(key):
+					slim_props[key] = props[key]
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"node": {
+					"path": node.get("path", ""),
+					"type": node.get("type", ""),
+					"properties": slim_props,
+				},
+			}
+		"list_project_files":
+			var files: Array = result.get("files", [])
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"files": files.slice(0, 15),
+				"truncated": files.size() > 15,
+			}
+		_:
+			var slim: Dictionary = result.duplicate(true)
+			slim.erase("snapshot")
+			slim.erase("tree")
+			return {"tool": tool_name, "result": slim}
+
+func _index_tree_nodes(tree: Dictionary, limit: int) -> Array:
+	var out: Array = []
+	_walk_tree_index(tree, out, limit)
+	return out
+
+func _walk_tree_index(node: Dictionary, out: Array, limit: int) -> void:
+	if out.size() >= limit:
+		return
+	var item: Dictionary = {
+		"name": node.get("name", ""),
+		"path": node.get("path", ""),
+		"type": node.get("type", ""),
+	}
+	if node.has("children_count"):
+		item["children_count"] = node.get("children_count")
+	out.append(item)
+	var children: Variant = node.get("children", [])
+	if children is Array:
+		for child in children:
+			if child is Dictionary:
+				_walk_tree_index(child, out, limit)
+			if out.size() >= limit:
+				return
 
 func extract_tool_call_json_strings(text: String) -> Array[String]:
 	var found: Array[String] = []

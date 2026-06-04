@@ -92,14 +92,13 @@ func _get_agent_instructions() -> String:
 	return (
 		"## Agent mode\n"
 		+ "You act over multiple steps using editor tools to ACTUALLY perform the user's task.\n"
-		+ "Do NOT just inspect the scene or describe a plan: you must execute the tool calls "
-		+ "that make the real changes (create_scene, add_node, instance_scene, create_box_mesh, "
-		+ "set_node_property, move_node_3d, etc.).\n"
-		+ "Inspect only when you truly need information (one quick inspection tool), then immediately act.\n"
+		+ "Do NOT chain read-only tools (get_scene_snapshot + get_scene_tree + inspect_node). "
+		+ "Use @ mentions / attached context for node paths first. At most ONE inspect tool if needed.\n"
+		+ "For scripts: call create_script in ONE step with attach_to + full content (unless user asked for code only).\n"
 		+ "Emit tool calls using exactly: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>\n"
-		+ "After each tool batch you receive results and an updated scene snapshot; use them to continue.\n"
-		+ "Only reply with a final summary (and NO <tool_call> blocks) AFTER you have already made the "
-		+ "requested changes. Never end the task with only an inspection or a plan."
+		+ "After each tool batch you receive compact results — use them and ACT, do not re-inspect.\n"
+		+ "Only reply with a final summary (and NO <tool_call> blocks) AFTER the task is done. "
+		+ "If user wants code to paste themselves, reply with ```gdscript and do NOT call create_script."
 	)
 
 func _load_base_context() -> String:
