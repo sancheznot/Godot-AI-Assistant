@@ -1,0 +1,62 @@
+{
+	"ai_models": {
+		"anthropic": {
+			"api_endpoint": "https://api.anthropic.com/v1/messages",
+			"api_key": "",
+			"enabled": false,
+			"model": "claude-3-5-haiku-20241022"
+		},
+		"cursor": {
+			"api_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+			"api_key": "",
+			"api_mode": "local_proxy",
+			"enabled": false,
+			"model": "composer-2.5"
+		},
+		"default_provider": "ollama",
+		"gemini": {
+			"api_endpoint": "https://generativelanguage.googleapis.com/v1beta",
+			"api_key": "",
+			"enabled": false,
+			"model": "gemini-2.0-flash"
+		},
+		"lmstudio": {
+			"api_endpoint": "http://localhost:1234/v1/chat/completions",
+			"api_key": "",
+			"enabled": false,
+			"model": "local-model"
+		},
+		"ollama": {
+			"api_endpoint": "http://localhost:11434",
+			"enabled": true,
+			"model": "llama3.2"
+		},
+		"openai": {
+			"api_endpoint": "https://api.openai.com/v1/chat/completions",
+			"api_key": "",
+			"enabled": false,
+			"model": "gpt-4o-mini"
+		}
+	},
+	"plugin": {
+		"author": "sancheznotdev",
+		"description": "Asistente AI integrado en el editor de Godot",
+		"name": "AI Assistant Plugin",
+		"version": "1.2.0"
+	},
+	"settings": {
+		"active_skill": "godot_scene_editing",
+		"agent_max_steps": 8,
+		"context_depth": "intermediate",
+		"enable_agent_loop": true,
+		"enable_editor_tools": true,
+		"enable_thinking": true,
+		"harness_base_context_path": "res://addons/ai_assistant_plugin/harness/base_context.md",
+		"harness_thinking_path": "res://addons/ai_assistant_plugin/harness/thinking_instructions.md",
+		"include_project_context": true,
+		"max_tokens": 4096,
+		"skills_path": "res://addons/ai_assistant_plugin/skills",
+		"temperature": 0.7,
+		"ui_language": "auto"
+	}
+}

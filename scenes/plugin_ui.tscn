@@ -1,0 +1,174 @@
+[gd_scene load_steps=2 format=3 uid="uid://b5h8q491g78k"]
+
+[ext_resource type="Script" path="res://addons/ai_assistant_plugin/scripts/ui_plugin.gd" id="1"]
+
+[node name="AIAssistantPluginUI" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="RootVBox" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = -6.0
+offset_bottom = -6.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+
+[node name="MainSplit" type="SplitContainer" parent="RootVBox"]
+layout_mode = 2
+size_flags_vertical = 3
+split_offset = 280
+vertical = true
+
+[node name="ConversationPanel" type="PanelContainer" parent="RootVBox/MainSplit"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ConversationVBox" type="VBoxContainer" parent="RootVBox/MainSplit/ConversationPanel"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="ConversationHeader" type="HBoxContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox"]
+layout_mode = 2
+
+[node name="ConversationTitle" type="Label" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Conversation"
+
+[node name="HistoryDropdown" type="OptionButton" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
+custom_minimum_size = Vector2(140, 28)
+layout_mode = 2
+
+[node name="NewChatButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
+layout_mode = 2
+flat = true
+text = "New"
+
+[node name="ClearButton" type="Button" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader"]
+layout_mode = 2
+flat = true
+text = "Clear"
+
+[node name="ConversationScroll" type="ScrollContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox"]
+layout_mode = 2
+size_flags_vertical = 3
+follow_focus = true
+horizontal_scroll_mode = 0
+
+[node name="MessagesVBox" type="VBoxContainer" parent="RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 10
+
+[node name="ComposerPanel" type="PanelContainer" parent="RootVBox/MainSplit"]
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.45
+
+[node name="ComposerVBox" type="VBoxContainer" parent="RootVBox/MainSplit/ComposerPanel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PromptTextEdit" type="TextEdit" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
+custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
+size_flags_vertical = 3
+placeholder_text = "Escribe tu mensaje…  /help  ·  @archivo  ·  Enter envía"
+wrap_mode = 1
+
+[node name="MentionPopup" type="PopupPanel" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
+size = Vector2i(360, 220)
+
+[node name="MentionList" type="ItemList" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/MentionPopup"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="BottomToolbar" type="HBoxContainer" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ModelDropdown" type="OptionButton" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+custom_minimum_size = Vector2(200, 28)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RefreshModelsButton" type="Button" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+flat = true
+tooltip_text = "Refresh model list"
+text = "↻"
+
+[node name="SkillsDropdown" type="OptionButton" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+custom_minimum_size = Vector2(130, 28)
+layout_mode = 2
+
+[node name="ContextCheckBox" type="CheckBox" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+layout_mode = 2
+button_pressed = true
+text = "Context"
+
+[node name="ToolsCheckBox" type="CheckBox" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+layout_mode = 2
+button_pressed = true
+text = "Tools"
+
+[node name="AgentCheckBox" type="CheckBox" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+layout_mode = 2
+button_pressed = true
+text = "Agent"
+
+[node name="ThinkingCheckBox" type="CheckBox" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+layout_mode = 2
+button_pressed = true
+text = "Think"
+
+[node name="ToolbarSpacer" type="Control" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ConfigButton" type="Button" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+custom_minimum_size = Vector2(72, 28)
+layout_mode = 2
+flat = true
+text = "Config"
+
+[node name="SendButton" type="Button" parent="RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar"]
+custom_minimum_size = Vector2(36, 28)
+layout_mode = 2
+text = "↑"
+
+[node name="StatusBar" type="PanelContainer" parent="RootVBox"]
+layout_mode = 2
+
+[node name="StatusHBox" type="HBoxContainer" parent="RootVBox/StatusBar"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StatusLabel" type="Label" parent="RootVBox/StatusBar/StatusHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Ready"
+
+[node name="HarnessLabel" type="Label" parent="RootVBox/StatusBar/StatusHBox"]
+layout_mode = 2
+text = "Harness: base · thinking · context · tools"
+
+[node name="ShortcutHint" type="Label" parent="RootVBox/StatusBar/StatusHBox"]
+layout_mode = 2
+text = "Enter · @ refs · / cmds"

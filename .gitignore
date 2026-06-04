@@ -1,0 +1,10 @@
+# Godot
+.godot/
+*.import
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp / debug
+scripts/_parse_check.gd
