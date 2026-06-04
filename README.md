@@ -51,6 +51,22 @@ Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License
 
 ---
 
+## Screenshots
+
+**Editor dock** — chat, model/skills toolbar, and agent toggles.
+
+<p align="center">
+  <img src="docs/preview_dock.jpg" alt="Golem-AI dock in the Godot editor" width="520">
+</p>
+
+**Agent history & `@` context** — searchable sessions, pin/archive, and autocomplete for scenes, files, and skills.
+
+<p align="center">
+  <img src="docs/preview_autocomplete.jpg" alt="Golem-AI history panel and @ mention autocomplete" width="520">
+</p>
+
+---
+
 ## Features
 
 - **Chat composer** with bubble UI, thinking blocks, and agent step progress
@@ -168,3 +184,5 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 **Autor:** [sancheznotdev](https://github.com/sancheznot) · Licencia MIT
 
 Instalación: copia la carpeta a `addons/ai_assistant_plugin`, activa el plugin en Ajustes del proyecto y configura un proveedor (Ollama, OpenAI, etc.) desde **Config** en el dock.
+
+Capturas: ver sección **Screenshots** arriba (dock del editor e historial con `@`).
