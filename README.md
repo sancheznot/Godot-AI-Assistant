@@ -205,15 +205,28 @@ You can send attachments without text; the plugin uses a default analysis prompt
 
 ## Configuration
 
-Settings are stored in:
+Copy the example config on first setup:
 
 ```
-addons/ai_assistant_plugin/config/plugin_config.json
+cp addons/ai_assistant_plugin/config/plugin_config.example.json \
+   addons/ai_assistant_plugin/config/plugin_config.json
 ```
 
-> **Do not commit API keys.** Keep local keys in `plugin_config.json` (gitignored in your project if needed).
+Settings (endpoints, models, toggles) are stored in `config/plugin_config.json`. **API keys are never written there.**
 
-Key options:
+### API keys & secrets
+
+| Storage | Path / variable | Notes |
+|--------|------------------|--------|
+| **Encrypted file** | `user://ai_assistant_plugin/secrets.enc` | Default. Keys from the Config UI are saved here via Godot's encrypted file API. |
+| **Passphrase** | `GOLEM_AI_SECRETS_PASSPHRASE` | Optional. Custom passphrase for `secrets.enc`. Default: machine id (per device). |
+| **Environment** | `GOLEM_AI_API_KEY_<PROVIDER>` | Optional override per provider, e.g. `GOLEM_AI_API_KEY_OPENAI`, `GOLEM_AI_API_KEY_MINIMAX`. Takes priority over the encrypted store. |
+
+On first launch after updating, keys still present in an old `plugin_config.json` are **migrated automatically** to `secrets.enc` and removed from the JSON.
+
+> **Do not commit API keys.** `plugin_config.json` is gitignored; use `plugin_config.example.json` as the template. If keys were ever pushed to git, **rotate them** in each provider's dashboard.
+
+Key options in `plugin_config.json`:
 
 - **Providers** — endpoints, API keys, default models
 - **Context depth** — `basic` / `intermediate` / `full`

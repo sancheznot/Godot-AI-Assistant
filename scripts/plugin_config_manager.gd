@@ -3,6 +3,9 @@ extends RefCounted
 # Plugin Configuration Manager / Gestor de configuración del plugin
 
 const CONFIG_PATH := "res://addons/ai_assistant_plugin/config/plugin_config.json"
+const EXAMPLE_CONFIG_PATH := "res://addons/ai_assistant_plugin/config/plugin_config.example.json"
+
+const SecretsManager := preload("res://addons/ai_assistant_plugin/scripts/secrets_manager.gd")
 
 const PROVIDER_IDS := [
 	"ollama", "lmstudio", "openrouter", "kimi", "minimax",
@@ -21,9 +24,13 @@ const PROVIDER_LABELS := {
 }
 
 var config := {}
+var secrets_manager: RefCounted = null
 
 func _init() -> void:
+	secrets_manager = SecretsManager.new()
+	secrets_manager.load_secrets()
 	load_config()
+	_migrate_api_keys_to_secrets()
 
 func load_config(config_path: String = CONFIG_PATH) -> bool:
 	var file := FileAccess.open(config_path, FileAccess.READ)
@@ -42,12 +49,13 @@ func load_config(config_path: String = CONFIG_PATH) -> bool:
 	return true
 
 func save_config(config_path: String = CONFIG_PATH) -> bool:
+	var snapshot: Dictionary = config.duplicate(true)
+	_strip_api_keys_from_config(snapshot)
 	var file := FileAccess.open(config_path, FileAccess.WRITE)
 	if file == null:
 		push_error("AI Assistant: could not save config")
 		return false
-	
-	file.store_string(JSON.stringify(config, "\t"))
+	file.store_string(JSON.stringify(snapshot, "\t"))
 	file.close()
 	return true
 
@@ -233,6 +241,32 @@ func _migrate_legacy_config() -> void:
 	if not settings.has("ui_language"):
 		settings["ui_language"] = "auto"
 
+func _migrate_api_keys_to_secrets() -> void:
+	if secrets_manager == null or not config.has("ai_models"):
+		return
+	var imported: Dictionary = {}
+	for provider_id in PROVIDER_IDS:
+		var provider_cfg: Variant = config.ai_models.get(provider_id)
+		if not provider_cfg is Dictionary:
+			continue
+		var legacy_key: String = String(provider_cfg.get("api_key", "")).strip_edges()
+		if legacy_key.is_empty():
+			continue
+		imported[provider_id] = legacy_key
+		provider_cfg.erase("api_key")
+	if imported.is_empty():
+		return
+	secrets_manager.import_plaintext_keys(imported)
+	save_config()
+
+func _strip_api_keys_from_config(root: Dictionary) -> void:
+	if not root.has("ai_models"):
+		return
+	for provider_id in root.ai_models.keys():
+		var provider_cfg: Variant = root.ai_models[provider_id]
+		if provider_cfg is Dictionary:
+			provider_cfg.erase("api_key")
+
 func _normalize_ollama_endpoint(endpoint: String) -> String:
 	var value := endpoint.strip_edges().trim_suffix("/")
 	if value.ends_with("/api/generate") or value.ends_with("/api/chat"):
@@ -274,14 +308,35 @@ func set_setting(key: String, value) -> void:
 	save_config()
 
 func get_provider_config(provider_id: String) -> Dictionary:
-	if config.has("ai_models") and config.ai_models.has(provider_id):
-		return config.ai_models[provider_id]
-	return {}
+	if not config.has("ai_models") or not config.ai_models.has(provider_id):
+		return {}
+	var provider_cfg: Dictionary = config.ai_models[provider_id].duplicate(true)
+	provider_cfg["api_key"] = get_provider_api_key(provider_id)
+	return provider_cfg
+
+func get_provider_api_key(provider_id: String) -> String:
+	if secrets_manager == null:
+		return ""
+	return String(secrets_manager.get_api_key(provider_id))
+
+func is_provider_api_key_from_env(provider_id: String) -> bool:
+	if secrets_manager == null:
+		return false
+	return secrets_manager.is_api_key_from_env(provider_id)
+
+func get_provider_api_key_env_var(provider_id: String) -> String:
+	if secrets_manager == null:
+		return "GOLEM_AI_API_KEY_%s" % provider_id.to_upper()
+	return secrets_manager.get_env_var_name(provider_id)
 
 func set_provider_config(provider_id: String, provider_config: Dictionary) -> void:
 	if not config.has("ai_models"):
 		config["ai_models"] = {}
-	config.ai_models[provider_id] = provider_config
+	var copy: Dictionary = provider_config.duplicate(true)
+	if copy.has("api_key") and secrets_manager != null:
+		secrets_manager.set_api_key(provider_id, String(copy.get("api_key", "")))
+		copy.erase("api_key")
+	config.ai_models[provider_id] = copy
 	save_config()
 
 func is_provider_enabled(provider_id: String) -> bool:

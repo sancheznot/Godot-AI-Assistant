@@ -11,3 +11,6 @@ scripts/_parse_check.gd
 
 # Personal cheatsheets (not for repo)
 assetlib_submit.txt
+
+# Local config with endpoints/models (API keys live in encrypted user:// store)
+config/plugin_config.json

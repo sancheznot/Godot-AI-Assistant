@@ -566,12 +566,25 @@ func _make_provider_section(provider_id: String) -> PanelContainer:
 		grid.add_child(_make_field_label(_tr("config.api_key")))
 		var api_key := LineEdit.new()
 		api_key.name = "ApiKey"
-		api_key.text = String(provider_cfg.get("api_key", ""))
-		api_key.placeholder_text = _tr("config.api_key_placeholder")
-		api_key.secret = true
+		var from_env: bool = config_manager.is_provider_api_key_from_env(provider_id)
+		if from_env:
+			api_key.text = "••••••••"
+			api_key.editable = false
+			api_key.placeholder_text = config_manager.get_provider_api_key_env_var(provider_id)
+		else:
+			api_key.text = String(provider_cfg.get("api_key", ""))
+			api_key.placeholder_text = _tr("config.api_key_placeholder")
+		api_key.secret = not from_env
 		api_key.custom_minimum_size = Vector2(260, 28)
 		_style_line_edit(api_key)
 		grid.add_child(api_key)
+		if from_env:
+			var env_hint := Label.new()
+			env_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			env_hint.text = _tr("config.api_key_env_hint", [config_manager.get_provider_api_key_env_var(provider_id)])
+			env_hint.add_theme_font_size_override("font_size", 11)
+			env_hint.add_theme_color_override("font_color", COLOR_MUTED)
+			box.add_child(env_hint)
 	
 	if provider_id == "cursor":
 		grid.add_child(_make_field_label(_tr("config.api_mode")))
@@ -770,7 +783,7 @@ func _on_save_pressed() -> void:
 			elif model_option.item_count > 0:
 				provider_cfg["model"] = model_option.get_item_text(model_option.selected)
 		
-		if grid.has_node("ApiKey"):
+		if grid.has_node("ApiKey") and not config_manager.is_provider_api_key_from_env(provider_id):
 			provider_cfg["api_key"] = grid.get_node("ApiKey").text
 		if grid.has_node("ApiMode"):
 			provider_cfg["api_mode"] = grid.get_node("ApiMode").get_item_text(grid.get_node("ApiMode").selected)

@@ -2,13 +2,11 @@
 	"ai_models": {
 		"anthropic": {
 			"api_endpoint": "https://api.anthropic.com/v1/messages",
-			"api_key": "",
 			"enabled": false,
 			"model": "claude-3-5-haiku-20241022"
 		},
 		"cursor": {
 			"api_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-			"api_key": "",
 			"api_mode": "local_proxy",
 			"enabled": false,
 			"model": "composer-2.5"
@@ -16,15 +14,23 @@
 		"default_provider": "ollama",
 		"gemini": {
 			"api_endpoint": "https://generativelanguage.googleapis.com/v1beta",
-			"api_key": "",
 			"enabled": false,
 			"model": "gemini-2.0-flash"
 		},
+		"kimi": {
+			"api_endpoint": "https://api.moonshot.ai/v1/chat/completions",
+			"enabled": false,
+			"model": "kimi-k2.5"
+		},
 		"lmstudio": {
 			"api_endpoint": "http://localhost:1234/v1/chat/completions",
-			"api_key": "sk-lm-7EIjDsxd:74P2twE1YBSRKZIMXtfk",
-			"enabled": true,
+			"enabled": false,
 			"model": "local-model"
+		},
+		"minimax": {
+			"api_endpoint": "https://api.minimax.io/v1/chat/completions",
+			"enabled": false,
+			"model": "MiniMax-M2.5"
 		},
 		"ollama": {
 			"api_endpoint": "http://localhost:11434",
@@ -33,16 +39,20 @@
 		},
 		"openai": {
 			"api_endpoint": "https://api.openai.com/v1/chat/completions",
-			"api_key": "",
 			"enabled": false,
 			"model": "gpt-4o-mini"
+		},
+		"openrouter": {
+			"api_endpoint": "https://openrouter.ai/api/v1/chat/completions",
+			"enabled": false,
+			"model": "openrouter/auto"
 		}
 	},
 	"plugin": {
 		"author": "sancheznotdev",
 		"description": "Asistente AI integrado en el editor de Godot",
 		"name": "AI Assistant Plugin",
-		"version": "1.2.0"
+		"version": "1.3.0"
 	},
 	"settings": {
 		"active_skill": "godot_scene_editing",
@@ -50,12 +60,14 @@
 		"context_depth": "intermediate",
 		"enable_agent_loop": true,
 		"enable_editor_tools": true,
-		"enable_thinking": false,
+		"enable_thinking": true,
+		"enable_vision": true,
 		"harness_base_context_path": "res://addons/ai_assistant_plugin/harness/base_context.md",
 		"harness_thinking_path": "res://addons/ai_assistant_plugin/harness/thinking_instructions.md",
 		"include_project_context": true,
-		"max_response_retries": 2.0,
+		"max_response_retries": 3,
 		"max_tokens": 4096,
+		"ollama_max_num_ctx": 32768,
 		"skills_path": "res://addons/ai_assistant_plugin/skills",
 		"temperature": 0.7,
 		"ui_language": "auto"
