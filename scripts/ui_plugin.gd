@@ -14,10 +14,10 @@ const COLOR_BODY_TEXT := Color(0.9, 0.91, 0.94, 1.0)
 @onready var conversation_title: Label = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/ConversationTitle
 @onready var conversation_scroll: ScrollContainer = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationScroll
 @onready var messages_container: VBoxContainer = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationScroll/MessagesVBox
-@onready var model_dropdown: OptionButton = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ModelDropdown
-@onready var refresh_models_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/RefreshModelsButton
-@onready var send_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/SendButton
-@onready var config_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ConfigButton
+@onready var model_dropdown: OptionButton = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/ModelDropdown
+@onready var refresh_models_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/RefreshModelsButton
+@onready var send_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/SendButton
+@onready var config_button: Button = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/ConfigButton
 @onready var new_agent_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/NewAgentButton
 @onready var history_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/HistoryButton
 @onready var more_button: Button = $RootVBox/MainSplit/ConversationPanel/ConversationVBox/ConversationHeader/HeaderActions/MoreButton
@@ -29,17 +29,18 @@ const COLOR_BODY_TEXT := Color(0.9, 0.91, 0.94, 1.0)
 @onready var more_menu: PopupMenu = $MoreMenu
 @onready var autocomplete_panel: PanelContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel
 @onready var suggestions_vbox: VBoxContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel/AutocompleteScroll/SuggestionsVBox
-@onready var skills_dropdown: OptionButton = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/SkillsDropdown
-@onready var context_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ContextCheckBox
-@onready var tools_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolsCheckBox
-@onready var agent_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/AgentCheckBox
-@onready var thinking_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ThinkingCheckBox
+@onready var skills_dropdown: OptionButton = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarPrimary/SkillsDropdown
+@onready var context_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/ContextCheckBox
+@onready var tools_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/ToolsCheckBox
+@onready var agent_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/AgentCheckBox
+@onready var thinking_checkbox: CheckBox = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/BottomToolbar/ToolbarToggles/ThinkingCheckBox
 @onready var status_label: Label = $RootVBox/StatusBar/StatusHBox/StatusLabel
 @onready var harness_label: Label = $RootVBox/StatusBar/StatusHBox/HarnessLabel
 @onready var shortcut_hint: Label = $RootVBox/StatusBar/StatusHBox/ShortcutHint
 @onready var conversation_panel: PanelContainer = $RootVBox/MainSplit/ConversationPanel
 @onready var composer_panel: PanelContainer = $RootVBox/MainSplit/ComposerPanel
 @onready var status_bar: PanelContainer = $RootVBox/StatusBar
+@onready var autocomplete_scroll: ScrollContainer = $RootVBox/MainSplit/ComposerPanel/ComposerVBox/AutocompletePanel/AutocompleteScroll
 
 var editor_plugin: EditorPlugin = null
 var config_manager: RefCounted = null
@@ -69,6 +70,8 @@ var _autocomplete_selected: int = 0
 var _history_session_menu: PopupMenu = null
 var _history_menu_session_id: String = ""
 var _history_archived_open: bool = false
+
+const AUTOCOMPLETE_MAX_HEIGHT := 120
 
 func setup(
 	plugin: EditorPlugin,
@@ -132,6 +135,7 @@ func _ready() -> void:
 	mention_resolver.setup(project_context, skills_manager)
 	
 	_apply_composer_styles()
+	_configure_dock_layout()
 	initialize_ui()
 	_apply_locale()
 	_restore_chat_from_history()
@@ -181,6 +185,32 @@ func _apply_composer_styles() -> void:
 	_style_toolbar_option(skills_dropdown)
 	autocomplete_panel.visible = false
 	_update_history_popup_styles()
+
+func _configure_dock_layout() -> void:
+	# Keep the dock UI inside its panel bounds / Mantener la UI dentro del dock
+	clip_contents = true
+	custom_minimum_size = Vector2.ZERO
+	set_anchors_preset(Control.PRESET_FULL_RECT)
+	set_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_KEEP_SIZE)
+	harness_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	shortcut_hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	resized.connect(_on_dock_resized)
+	call_deferred("_on_dock_resized")
+
+func _on_dock_resized() -> void:
+	var compact: bool = size.x < 360
+	shortcut_hint.visible = not compact
+	harness_label.visible = size.x >= 280
+	prompt_text_edit.custom_minimum_size.y = 56 if compact else 64
+	_update_autocomplete_height()
+
+func _update_autocomplete_height() -> void:
+	if not autocomplete_panel.visible:
+		autocomplete_scroll.custom_minimum_size = Vector2.ZERO
+		return
+	var max_h: float = mini(float(AUTOCOMPLETE_MAX_HEIGHT), maxf(size.y * 0.28, 72.0))
+	autocomplete_scroll.custom_minimum_size = Vector2(0, max_h)
 
 func _tr(key: String, args: Array = []) -> String:
 	if locale_manager:
@@ -760,6 +790,7 @@ func _category_label(category: String) -> String:
 
 func _hide_autocomplete() -> void:
 	autocomplete_panel.visible = false
+	autocomplete_scroll.custom_minimum_size = Vector2.ZERO
 	_autocomplete_items.clear()
 	_autocomplete_buttons.clear()
 	_autocomplete_trigger = {}
@@ -820,6 +851,7 @@ func _render_autocomplete_items() -> void:
 	_autocomplete_selected = 0
 	_highlight_autocomplete_selection()
 	autocomplete_panel.visible = true
+	_update_autocomplete_height()
 
 func _highlight_autocomplete_selection() -> void:
 	for index in _autocomplete_buttons.size():

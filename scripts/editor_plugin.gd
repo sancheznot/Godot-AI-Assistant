@@ -32,6 +32,7 @@ func _enter_tree() -> void:
 	plugin_control = ui_scene.instantiate()
 	if plugin_control.has_method("setup"):
 		plugin_control.setup(self, config_manager, project_context, editor_tools, skills_manager, locale_manager)
+	plugin_control.custom_minimum_size = Vector2.ZERO
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, plugin_control)
 	print("AI Assistant Plugin added to editor")
 

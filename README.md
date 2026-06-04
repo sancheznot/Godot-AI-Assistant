@@ -37,9 +37,13 @@
 ```
 
 > **Golem-AI** — el golem de Godot con inteligencia artificial.  
-> *(El banner anterior en estilo `$` decía **“AI ASSISTANT”**.)*
+
 
 # Golem-AI
+
+<p align="center">
+  <img src="icon.png" alt="Golem-AI logo" width="180">
+</p>
 
 **AI-powered editor assistant for Godot 4** — chat with local or cloud models, edit scenes, run editor tools, and attach project context directly from the dock.
 
@@ -125,6 +129,10 @@ Chat history is saved under `user://ai_assistant_plugin/chat_history.json`.
 
 ```
 ai_assistant_plugin/
+├── icon.png            # AssetLib icon (1024×1024)
+├── docs/               # AssetLib previews
+│   ├── preview_dock.jpg
+│   └── preview_autocomplete.jpg
 ├── plugin.cfg
 ├── config/
 ├── harness/          # System prompt layers

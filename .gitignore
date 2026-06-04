@@ -8,3 +8,6 @@ Thumbs.db
 
 # Temp / debug
 scripts/_parse_check.gd
+
+# Personal cheatsheets (not for repo)
+assetlib_submit.txt
