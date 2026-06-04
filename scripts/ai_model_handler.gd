@@ -16,6 +16,7 @@ const MAX_CONVERSATION_MESSAGES := 24
 const DEFAULT_RESPONSE_RETRIES := 2
 const ModelCapabilities := preload("res://addons/ai_assistant_plugin/scripts/model_capabilities.gd")
 const ComposerAttachments := preload("res://addons/ai_assistant_plugin/scripts/composer_attachments.gd")
+const ThinkingTags := preload("res://addons/ai_assistant_plugin/scripts/thinking_tags.gd")
 
 var config_manager: RefCounted = null
 var project_context: RefCounted = null
@@ -396,10 +397,8 @@ func _anthropic_multimodal_parts(text: String, images: Array) -> Array:
 	return parts
 
 func _sanitize_message_for_context(text: String) -> String:
-	var cleaned: String = text
+	var cleaned: String = ThinkingTags.strip_all_thinking(text)
 	var regex := RegEx.new()
-	regex.compile("(?i)(?s)<thinking>.*?</thinking>")
-	cleaned = regex.sub(cleaned, "", true)
 	regex.compile("(?i)(?s)\\[Thinking\\].*?\\[/Thinking\\]")
 	cleaned = regex.sub(cleaned, "", true)
 	regex.compile("(?m)^### Step \\d+\\s*$")
@@ -653,12 +652,20 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 				"system": system_prompt,
 				"messages": api_messages
 			}
-		"cursor", "openai", "lmstudio", "openrouter", "kimi", "minimax":
+		"cursor", "openai", "lmstudio", "openrouter", "kimi":
 			return {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
 				"messages": _prepend_system_message(system_prompt, api_messages)
+			}
+		"minimax":
+			return {
+				"model": model_name,
+				"max_tokens": max_tokens,
+				"temperature": temperature,
+				"messages": _prepend_system_message(system_prompt, api_messages),
+				"reasoning_split": true,
 			}
 		_:
 			return {
@@ -811,7 +818,7 @@ func _handle_single_response(text: String) -> void:
 	if _pending_enable_tools and editor_tools and _response_has_tool_calls(content):
 		var tool_results: Array = editor_tools.parse_and_execute_tool_calls(content)
 		if not tool_results.is_empty():
-			final_text += "\n\n---\nTool results:\n%s" % JSON.stringify(tool_results, "\t")
+			final_text += "\n\n### Tool results\n%s" % JSON.stringify(tool_results, "\t")
 	_handle_request_success(true, final_text)
 
 func _handle_agent_response(text: String) -> void:
@@ -826,6 +833,8 @@ func _handle_agent_response(text: String) -> void:
 	var content: String = String(evaluation.get("content", String(parsed.get("content", text))))
 	var display_parsed: Dictionary = _parsed_for_display(parsed, content)
 	var formatted: String = _format_model_output(display_parsed)
+	if harness != null and harness.has_method("sanitize_display_text"):
+		formatted = harness.sanitize_display_text(formatted)
 	_agent_log.append("### Step %d\n%s" % [_agent_step, formatted])
 	_agent_messages.append({"role": "assistant", "content": _content_for_agent_context(content, parsed)})
 	agent_log_updated.emit(_compose_agent_output(), _agent_step, _agent_max_steps)
@@ -892,8 +901,21 @@ func _handle_agent_response(text: String) -> void:
 		)
 		return
 	
+	var visible_turn: String = _visible_response_text(content, parsed)
+	if _content_has_degenerate_repetition(visible_turn):
+		_finish_agent_loop(
+			true,
+			_compose_agent_output()
+			+ "\n\n---\nEl agente se detuvo: respuesta repetitiva detectada."
+		)
+		return
+	
 	# 1) Tools executed (any) and steps remaining -> feed compact results back, continue.
 	if not tool_results.is_empty() and _agent_step < _agent_max_steps:
+		if ok_tool_count > 0 and editor_tools != null and editor_tools.batch_had_mutation(tool_results):
+			if _looks_like_task_complete(visible_turn) or _content_has_degenerate_repetition(visible_turn):
+				_finish_agent_loop(true, _compose_agent_output())
+				return
 		var followup: String = _build_tool_followup(tool_results)
 		_agent_messages.append({"role": "user", "content": followup})
 		_agent_step += 1
@@ -984,6 +1006,10 @@ func _build_tool_followup(tool_results: Array) -> String:
 			+ "or reply with a final ```gdscript code block if the user wanted code only."
 		)
 	elif editor_tools and editor_tools.batch_had_mutation(tool_results):
+		parts.append(
+			"After applying changes, call get_script_errors (or get_runtime_errors if the game is running) to verify. "
+			+ "Use get_input_map if the error mentions a missing InputMap action."
+		)
 		var snapshot: Dictionary = editor_tools.execute_tool("get_scene_snapshot", {"max_depth": 3})
 		if bool(snapshot.get("ok", false)):
 			parts.append("Updated scene index (compact):")
@@ -993,7 +1019,8 @@ func _build_tool_followup(tool_results: Array) -> String:
 			}]))
 	parts.append(
 		"Continue the task. Prefer ONE action per step. "
-		+ "If the task is complete, reply with a final summary only and do NOT include <tool_call> blocks."
+		+ "If the task is complete, reply with ONE short final summary only (max 8 lines, no emoji spam) "
+		+ "and do NOT include <tool_call> blocks."
 		+ _language_hint_suffix()
 	)
 	return "\n\n".join(parts)
@@ -1072,10 +1099,17 @@ func _agent_response_signature(content: String, parsed: Dictionary) -> String:
 	# Normalizar para que planes casi idénticos (p. ej. solo difiere el markdown) colapsen
 	# a la misma firma y se detecten como repetición.
 	var text: String = _visible_response_text(content, parsed).to_lower()
+	for token in ["🎮", "✅", "❌", "*", "#", "`", "—"]:
+		text = text.replace(token, "")
 	var regex := RegEx.new()
 	regex.compile("[*`#\\s]+")
 	text = regex.sub(text, " ", true)
 	return text.strip_edges().substr(0, 200)
+
+func _content_has_degenerate_repetition(text: String) -> bool:
+	if harness != null and harness.has_method("has_degenerate_repetition"):
+		return harness.has_degenerate_repetition(text)
+	return false
 
 func _looks_like_task_complete(text: String) -> bool:
 	var lower: String = text.to_lower()
@@ -1084,6 +1118,16 @@ func _looks_like_task_complete(text: String) -> bool:
 		"final summary",
 		"task is complete",
 		"task complete",
+		"tarea completada",
+		"tarea complete",
+		"problemas resueltos",
+		"problema resuelto",
+		"listo para probar",
+		"esperando tu prueba",
+		"esperando feedback",
+		"sin errores de script",
+		"sin errores de compilación",
+		"compila sin errores",
 		"¿necesitas ayuda",
 		"need any additional",
 		"need further help",
@@ -1124,16 +1168,19 @@ func _act_now_nudge() -> String:
 	if _active_user_language == "es":
 		return (
 			"Todavía NO has hecho ningún cambio en la escena. No repitas get_scene_snapshot + get_scene_tree + inspect_node. "
+			+ "NO preguntes al usuario por InputMap, grupos o errores: usa get_input_map, get_scene_groups, get_runtime_errors o get_script_errors. "
 			+ "Si la tarea es un script, llama create_script AHORA con attach_to y content completo. "
+			+ "Después llama get_script_errors para verificar parse/compile. "
 			+ "Si el usuario pidió solo código, responde con un bloque ```gdscript. "
 			+ "Usa exactamente el formato <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
 		)
 	return (
 		"You have NOT made any scene changes yet. Do not repeat get_scene_snapshot + get_scene_tree + inspect_node. "
-		+ "For scripts, call create_script NOW with attach_to and full content. "
+		+ "Do NOT ask the user for InputMap actions, groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors. "
+		+ "For scripts, call create_script NOW with attach_to and full content, then get_script_errors to verify. "
 		+ "If the user wanted code only, reply with a ```gdscript block. "
 		+ "Use exactly the format <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>."
-	)
+		)
 
 func _detect_language(text: String) -> String:
 	var lower: String = text.to_lower()
@@ -1169,6 +1216,21 @@ func _agent_response_is_stalled(content: String, parsed: Dictionary) -> bool:
 		return true
 	if visible.length() <= 4 and visible.begins_with("<"):
 		return true
+	if _response_has_tool_calls(content):
+		return false
+	return _response_asks_user_instead_of_acting(visible)
+
+func _response_asks_user_instead_of_acting(text: String) -> bool:
+	var lower: String = text.to_lower()
+	var ask_markers: PackedStringArray = [
+		"¿cuál es", "cual es el nombre", "dime el nombre", "tell me the",
+		"what is the name", "what action", "input map", "project settings",
+		"project → project settings", "can you tell me", "could you tell me",
+		"¿cuál action", "¿cual action", "revisa en:", "check in:",
+	]
+	for marker in ask_markers:
+		if lower.contains(marker):
+			return true
 	return false
 
 func _ollama_content_to_string(content: Variant) -> String:
@@ -1278,6 +1340,10 @@ func _openai_choice_to_text(choice: Dictionary) -> String:
 		var message: Dictionary = choice.message
 		var content: String = String(message.get("content", "")).strip_edges()
 		var reasoning: String = String(message.get("reasoning_content", "")).strip_edges()
+		if reasoning.is_empty():
+			var extracted: Dictionary = ThinkingTags.extract_all_thinking(content)
+			reasoning = String(extracted.get("thinking", "")).strip_edges()
+			content = String(extracted.get("content", content)).strip_edges()
 		if not reasoning.is_empty() and content.is_empty():
 			return reasoning
 		if not reasoning.is_empty() and not content.is_empty():

@@ -162,7 +162,7 @@ func get_active_messages() -> Array:
 	var session: Dictionary = _find_session(active_session_id)
 	return session.get("messages", []).duplicate(true)
 
-func add_message(role: String, content: String, is_error: bool = false, attachments: Array = []) -> void:
+func add_message(role: String, content: String, is_error: bool = false, attachments: Array = [], retry_payload: Dictionary = {}) -> void:
 	var session: Dictionary = _find_session(active_session_id)
 	if session.is_empty():
 		create_session(_title_from_message(content))
@@ -174,6 +174,8 @@ func add_message(role: String, content: String, is_error: bool = false, attachme
 		"is_error": is_error,
 		"timestamp": Time.get_unix_time_from_system(),
 	}
+	if is_error and retry_payload is Dictionary and not retry_payload.is_empty():
+		entry["retry_payload"] = retry_payload.duplicate(true)
 	if not attachments.is_empty():
 		var meta: Array = []
 		for item in attachments:
@@ -194,6 +196,21 @@ func add_message(role: String, content: String, is_error: bool = false, attachme
 		if current_title in ["Nuevo chat", "New chat", ""]:
 			session["title"] = _title_from_message(content)
 	save_history()
+
+func remove_last_message() -> Dictionary:
+	var session: Dictionary = _find_session(active_session_id)
+	if session.is_empty():
+		return {}
+	var messages: Array = session.get("messages", [])
+	if messages.is_empty():
+		return {}
+	var removed: Variant = messages.pop_back()
+	session["messages"] = messages
+	session["updated_at"] = Time.get_unix_time_from_system()
+	save_history()
+	if removed is Dictionary:
+		return removed as Dictionary
+	return {}
 
 func _count_user_messages(messages: Array) -> int:
 	var count: int = 0

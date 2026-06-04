@@ -9,6 +9,7 @@ var project_context: RefCounted
 var editor_tools: RefCounted
 var skills_manager: RefCounted
 var locale_manager: RefCounted
+var debugger_error_bridge: EditorDebuggerPlugin = null
 
 func _enter_tree() -> void:
 	config_manager = preload("res://addons/ai_assistant_plugin/scripts/plugin_config_manager.gd").new()
@@ -18,6 +19,9 @@ func _enter_tree() -> void:
 	project_context.setup(self)
 	editor_tools = preload("res://addons/ai_assistant_plugin/scripts/editor_tools.gd").new()
 	editor_tools.setup(self)
+	debugger_error_bridge = preload("res://addons/ai_assistant_plugin/scripts/debugger_error_bridge.gd").new()
+	debugger_error_bridge.setup(self)
+	add_debugger_plugin(debugger_error_bridge)
 	skills_manager = preload("res://addons/ai_assistant_plugin/scripts/skills_manager.gd").new()
 	skills_manager.load_skills(
 		String(config_manager.get_setting("skills_path", "res://addons/ai_assistant_plugin/skills")),
@@ -37,11 +41,17 @@ func _enter_tree() -> void:
 	print("AI Assistant Plugin added to editor")
 
 func _exit_tree() -> void:
+	if debugger_error_bridge:
+		remove_debugger_plugin(debugger_error_bridge)
+		debugger_error_bridge = null
 	if plugin_control:
 		remove_control_from_docks(plugin_control)
 		plugin_control.queue_free()
 		plugin_control = null
 	print("AI Assistant Plugin removed from editor")
+
+func get_debugger_error_bridge() -> EditorDebuggerPlugin:
+	return debugger_error_bridge
 
 func _has_main_screen() -> bool:
 	return false

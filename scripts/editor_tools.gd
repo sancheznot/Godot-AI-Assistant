@@ -32,8 +32,12 @@ Scene workflow:
 Inspection (use ONE tool max, prefer @ mentions / attached context first):
 - get_scene_tree: params {"max_depth":3}
 - get_scene_snapshot: params {"max_depth":4}
+- get_scene_groups: params {} or {"group":"players"} to list nodes in one group
+- get_input_map: params {} for project actions only, or {"action":"action_interact"} for one action
+- get_runtime_errors: params {"max_count":20,"clear_after":true} — runtime debugger errors (play mode)
+- get_script_errors: params {"script_path":"res://DoorScript.gd","clear_after":true} — GDScript parse errors + debugger errors
 - get_selection: params {}
-- inspect_node: params {"node_path":"Root/Child"}
+- inspect_node: params {"node_path":"Root/Child"} (includes node groups)
 - list_project_files: params {"extension":".tscn","limit":30}
 - get_tilemap_cells: params {"node_path":"Root/TileMapLayer","limit":200}
 
@@ -54,6 +58,9 @@ Scripting (create AND attach a script in ONE call):
   IMPORTANT: put the FULL script code in the "content" param (escape newlines as \\n). Do NOT put code in a separate markdown block. This single call writes the file and attaches it to attach_to (optional). The script is saved automatically — there is no create_script/open_script/save_script split.
 
 Rules:
+- ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
+- NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
+- After fixing scripts, call get_script_errors (or get_runtime_errors while the game runs) to verify; errors are cleared on read so the next check is fresh.
 - Use res:// paths only. NEVER prefix paths with "@" (write res://... not @res://...).
 - node_path / parent_node_path / attach_to are RELATIVE to the edited scene root (e.g. "Floor_1_exit/Ground_05"). Use "" for the root itself.
 - There is NO open_script / save_script / create_node tool. To make a script use create_script (it saves and attaches in one step).
@@ -72,6 +79,10 @@ func list_tool_names() -> Array[String]:
 		"instance_scene",
 		"get_scene_tree",
 		"get_scene_snapshot",
+		"get_scene_groups",
+		"get_input_map",
+		"get_runtime_errors",
+		"get_script_errors",
 		"get_selection",
 		"select_node",
 		"add_node",
@@ -101,6 +112,14 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_get_scene_tree(params)
 		"get_scene_snapshot":
 			result = _tool_get_scene_snapshot(params)
+		"get_scene_groups":
+			result = _tool_get_scene_groups(params)
+		"get_input_map":
+			result = _tool_get_input_map(params)
+		"get_runtime_errors":
+			result = _tool_get_runtime_errors(params)
+		"get_script_errors":
+			result = _tool_get_script_errors(params)
 		"get_selection":
 			result = _tool_get_selection()
 		"select_node":
@@ -206,6 +225,10 @@ func has_tool_calls(text: String) -> bool:
 const READ_ONLY_TOOLS: Array[String] = [
 	"get_scene_tree",
 	"get_scene_snapshot",
+	"get_scene_groups",
+	"get_input_map",
+	"get_runtime_errors",
+	"get_script_errors",
 	"inspect_node",
 	"get_selection",
 	"list_project_files",
@@ -285,14 +308,69 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 			for key in ["script", "visible", "position", "rotation", "scale"]:
 				if props.has(key):
 					slim_props[key] = props[key]
+			var slim_node: Dictionary = {
+				"path": node.get("path", ""),
+				"type": node.get("type", ""),
+				"properties": slim_props,
+			}
+			if node.has("groups"):
+				slim_node["groups"] = node.get("groups", [])
 			return {
 				"tool": tool_name,
 				"ok": true,
-				"node": {
-					"path": node.get("path", ""),
-					"type": node.get("type", ""),
-					"properties": slim_props,
-				},
+				"node": slim_node,
+			}
+		"get_scene_groups":
+			if result.has("group"):
+				return {
+					"tool": tool_name,
+					"ok": true,
+					"group": result.get("group", ""),
+					"nodes": result.get("nodes", []),
+				}
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"groups": result.get("groups", []),
+			}
+		"get_input_map":
+			if result.has("action"):
+				var action_entry: Dictionary = result.get("action", {})
+				return {
+					"tool": tool_name,
+					"ok": true,
+					"action": action_entry.get("action", ""),
+					"events": action_entry.get("events", []),
+				}
+			var actions: Array = result.get("actions", [])
+			var compact_actions: Array = []
+			for action_entry in actions.slice(0, 24):
+				if action_entry is Dictionary:
+					compact_actions.append({
+						"action": action_entry.get("action", ""),
+						"events": action_entry.get("events", []),
+					})
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"actions": compact_actions,
+				"truncated": actions.size() > 24,
+			}
+		"get_runtime_errors":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"count": result.get("count", 0),
+				"errors": result.get("errors", []),
+				"cleared": bool(result.get("cleared", false)),
+			}
+		"get_script_errors":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"count": result.get("count", 0),
+				"errors": result.get("errors", []),
+				"cleared": bool(result.get("cleared", false)),
 			}
 		"list_project_files":
 			var files: Array = result.get("files", [])
@@ -332,6 +410,136 @@ func _walk_tree_index(node: Dictionary, out: Array, limit: int) -> void:
 			if out.size() >= limit:
 				return
 
+func format_tool_results_for_display(text: String) -> String:
+	var trimmed: String = text.strip_edges()
+	if trimmed.begins_with("["):
+		var parsed: Variant = JSON.parse_string(trimmed)
+		if parsed is Array:
+			return summarize_tool_results_for_display(parsed)
+	if trimmed.begins_with("{"):
+		var parsed_obj: Variant = JSON.parse_string(trimmed)
+		if parsed_obj is Dictionary:
+			return summarize_tool_results_for_display([parsed_obj])
+	if trimmed.length() > 5000:
+		return "%s\n\n... (%d chars truncated)" % [trimmed.substr(0, 5000), trimmed.length() - 5000]
+	return trimmed
+
+func summarize_tool_results_for_display(entries: Array) -> String:
+	var lines: PackedStringArray = []
+	for entry in entries:
+		if not entry is Dictionary:
+			continue
+		lines.append(_summarize_tool_result_line(entry))
+	if lines.is_empty():
+		return "(empty tool results)"
+	return "\n".join(lines)
+
+func _summarize_tool_result_line(entry: Dictionary) -> String:
+	var tool_name: String = String(entry.get("tool", ""))
+	if not tool_name.is_empty():
+		if not bool(entry.get("ok", true)):
+			return "✗ %s: %s" % [tool_name, String(entry.get("error", "failed"))]
+		var result: Variant = entry.get("result", entry)
+		if result is Dictionary:
+			return "✓ %s: %s" % [tool_name, _summarize_result_dict(result as Dictionary)]
+		if entry.has("actions"):
+			var actions: Array = entry.get("actions", [])
+			var names: PackedStringArray = []
+			for action_entry in actions.slice(0, 10):
+				if action_entry is Dictionary:
+					names.append(String(action_entry.get("action", "")))
+			var suffix: String = ""
+			if actions.size() > 10:
+				suffix = " …+%d" % (actions.size() - 10)
+			return "✓ %s: %s%s" % [tool_name, ", ".join(names), suffix]
+		if entry.has("errors"):
+			var err_list: Array = entry.get("errors", [])
+			if err_list.is_empty():
+				return "✓ %s: no errors" % tool_name
+			var first: Variant = err_list[0]
+			if first is Dictionary:
+				return "✓ %s: %s" % [tool_name, String(first.get("summary", first.get("error", "error")))]
+			return "✓ %s: %d error(s)" % [tool_name, err_list.size()]
+		return "✓ %s" % tool_name
+	if entry.has("InputMap"):
+		var input_actions: Array = entry.get("InputMap", [])
+		var input_names: PackedStringArray = []
+		for action_entry in input_actions.slice(0, 8):
+			if action_entry is Dictionary:
+				input_names.append(String(action_entry.get("action", "")))
+		return "InputMap: %s" % ", ".join(input_names)
+	if entry.has("actions"):
+		var actions: Array = entry.get("actions", [])
+		var names: PackedStringArray = []
+		for action_entry in actions.slice(0, 10):
+			if action_entry is Dictionary:
+				names.append(String(action_entry.get("action", "")))
+		return "InputMap: %s" % ", ".join(names)
+	if entry.has("action"):
+		var action: Dictionary = entry.get("action", {})
+		if action is Dictionary:
+			return "action=%s events=%s" % [action.get("action", ""), action.get("events", [])]
+		return "action=%s" % action
+	return str(entry).substr(0, 240)
+
+func _summarize_result_dict(result: Dictionary) -> String:
+	if result.has("attached_to"):
+		return "attached_to=%s script=%s" % [result.get("attached_to", ""), result.get("script_path", "")]
+	if result.has("script_path"):
+		return "script=%s lines=%s" % [result.get("script_path", ""), result.get("lines", "")]
+	if result.has("error"):
+		return String(result.get("error", ""))
+	var keys: Array = result.keys()
+	keys.sort()
+	var parts: PackedStringArray = []
+	for key in keys.slice(0, 4):
+		parts.append("%s=%s" % [key, result.get(key)])
+	return ", ".join(parts)
+
+func find_tool_call_spans(text: String) -> Array:
+	var spans: Array = []
+	var seen: Dictionary = {}
+	var tag_regex := RegEx.new()
+	tag_regex.compile("(?s)<tool_call>(.*?)</tool_call>")
+	for match_result in tag_regex.search_all(text):
+		var inner: String = match_result.get_string(1).strip_edges()
+		if inner.is_empty() or seen.has(inner):
+			continue
+		seen[inner] = true
+		spans.append({
+			"start": match_result.get_start(1),
+			"end": match_result.get_end(1),
+			"json": inner,
+		})
+	var fence_regex := RegEx.new()
+	fence_regex.compile("(?s)```(?:json|tool_call)?\\s*(\\{.*?\\})\\s*```")
+	for match_result in fence_regex.search_all(text):
+		var block: String = extract_balanced_json_object(text, match_result.get_start(1))
+		if block.is_empty():
+			block = match_result.get_string(1).strip_edges()
+		if block.is_empty() or seen.has(block):
+			continue
+		seen[block] = true
+		spans.append({
+			"start": match_result.get_start(1),
+			"end": match_result.get_start(1) + block.length(),
+			"json": block,
+		})
+	for inline_start in _find_inline_tool_json_starts(text):
+		var block: String = extract_balanced_json_object(text, inline_start)
+		if block.is_empty() or seen.has(block):
+			continue
+		seen[block] = true
+		spans.append({
+			"start": inline_start,
+			"end": inline_start + block.length(),
+			"json": block,
+		})
+	spans.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.get("start", 0)) < int(b.get("start", 0))
+	)
+	return spans
+
 func extract_tool_call_json_strings(text: String) -> Array[String]:
 	var found: Array[String] = []
 	var seen: Dictionary = {}
@@ -342,13 +550,13 @@ func extract_tool_call_json_strings(text: String) -> Array[String]:
 	var fence_regex := RegEx.new()
 	fence_regex.compile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
 	for match_result in fence_regex.search_all(text):
-		var block: String = _extract_balanced_json_object(text, match_result.get_start(1))
+		var block: String = extract_balanced_json_object(text, match_result.get_start(1))
 		if not block.is_empty():
 			_collect_tool_json_candidate(block, found, seen)
 		else:
 			_collect_tool_json_candidate(match_result.get_string(1), found, seen)
 	for inline_start in _find_inline_tool_json_starts(text):
-		var block: String = _extract_balanced_json_object(text, inline_start)
+		var block: String = extract_balanced_json_object(text, inline_start)
 		_collect_tool_json_candidate(block, found, seen)
 	return found
 
@@ -365,7 +573,75 @@ func _find_inline_tool_json_starts(text: String) -> Array[int]:
 		search_from = idx + 1
 	return starts
 
-func _extract_balanced_json_object(text: String, start: int) -> String:
+func find_tool_result_json_spans(text: String) -> Array:
+	var decoded: String = text.replace("[lb]", "[").replace("[rb]", "]")
+	var spans: Array = []
+	var seen: Dictionary = {}
+	var search_from: int = 0
+	while search_from < decoded.length():
+		var idx: int = decoded.find("[", search_from)
+		if idx < 0:
+			break
+		var block: String = extract_balanced_json_array(decoded, idx)
+		if block.is_empty() or seen.has(block):
+			search_from = idx + 1
+			continue
+		if not looks_like_tool_results_json(block):
+			search_from = idx + 1
+			continue
+		seen[block] = true
+		spans.append({
+			"start": idx,
+			"end": idx + block.length(),
+			"json": block,
+		})
+		search_from = idx + block.length()
+	spans.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.get("start", 0)) < int(b.get("start", 0))
+	)
+	return spans
+
+func looks_like_tool_results_json(block: String) -> bool:
+	var parsed: Variant = JSON.parse_string(block.strip_edges())
+	if not parsed is Array or parsed.is_empty():
+		return false
+	for item in parsed:
+		if not item is Dictionary:
+			continue
+		if item.has("tool") or item.has("result") or item.has("InputMap") or item.has("actions"):
+			return true
+		if item.has("errors") or item.has("groups") or item.has("ok"):
+			return true
+	return false
+
+func extract_balanced_json_array(text: String, start: int) -> String:
+	if start < 0 or start >= text.length() or text[start] != "[":
+		return ""
+	var depth: int = 0
+	var in_string: bool = false
+	var escape: bool = false
+	for i in range(start, text.length()):
+		var ch: String = text[i]
+		if in_string:
+			if escape:
+				escape = false
+			elif ch == "\\":
+				escape = true
+			elif ch == "\"":
+				in_string = false
+			continue
+		match ch:
+			"\"":
+				in_string = true
+			"[":
+				depth += 1
+			"]":
+				depth -= 1
+				if depth == 0:
+					return text.substr(start, i - start + 1)
+	return ""
+
+func extract_balanced_json_object(text: String, start: int) -> String:
 	if start < 0 or start >= text.length() or text[start] != "{":
 		return ""
 	var depth: int = 0
@@ -417,6 +693,11 @@ func _parse_tool_json(raw_json: String) -> Variant:
 func _editor_interface() -> EditorInterface:
 	if _editor_plugin:
 		return _editor_plugin.get_editor_interface()
+	return null
+
+func _debugger_error_bridge() -> EditorDebuggerPlugin:
+	if _editor_plugin != null and _editor_plugin.has_method("get_debugger_error_bridge"):
+		return _editor_plugin.get_debugger_error_bridge()
 	return null
 
 func _edited_root() -> Node:
@@ -482,6 +763,240 @@ func _tool_get_scene_snapshot(params: Dictionary = {}) -> Dictionary:
 		"scene_path": root.scene_file_path,
 		"snapshot": _serialize_tree_detailed(root, 0, max_depth)
 	}
+
+func _tool_get_scene_groups(params: Dictionary = {}) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return {"ok": false, "error": "No scene loaded"}
+	var groups_map: Dictionary = {}
+	_collect_scene_groups(root, groups_map)
+	var group_filter: String = String(params.get("group", "")).strip_edges()
+	if not group_filter.is_empty():
+		return {
+			"ok": true,
+			"group": group_filter,
+			"nodes": groups_map.get(group_filter, []),
+		}
+	var summary: Array = []
+	for group_name in groups_map.keys():
+		var nodes: Array = groups_map[group_name]
+		summary.append({
+			"group": group_name,
+			"node_count": nodes.size(),
+			"nodes": nodes.slice(0, 12),
+		})
+	summary.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return String(a.get("group", "")) < String(b.get("group", ""))
+	)
+	return {"ok": true, "groups": summary}
+
+func _tool_get_input_map(params: Dictionary = {}) -> Dictionary:
+	var action_filter: String = String(params.get("action", "")).strip_edges()
+	var include_editor: bool = bool(params.get("include_editor", false))
+	var action_names: PackedStringArray = _get_project_input_action_names()
+	if action_names.is_empty() and not include_editor:
+		action_names = _filter_input_actions(InputMap.get_actions(), false)
+	elif include_editor:
+		action_names = InputMap.get_actions()
+	var output: Array = []
+	for action_name in action_names:
+		if not action_filter.is_empty() and String(action_name) != action_filter:
+			continue
+		if not InputMap.has_action(action_name):
+			continue
+		var events: Array = []
+		for event in InputMap.action_get_events(action_name):
+			var summary: String = _summarize_input_event(event)
+			if not summary.is_empty():
+				events.append(summary)
+		output.append({
+			"action": String(action_name),
+			"deadzone": InputMap.action_get_deadzone(action_name),
+			"events": events,
+		})
+	if not action_filter.is_empty():
+		if output.is_empty():
+			return {"ok": false, "error": "InputMap action not found: %s" % action_filter}
+		return {"ok": true, "action": output[0]}
+	output.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return String(a.get("action", "")) < String(b.get("action", ""))
+	)
+	return {"ok": true, "actions": output, "project_only": not include_editor}
+
+func _is_editor_input_action(action_name: String) -> bool:
+	var name: String = action_name.strip_edges()
+	if name.begins_with("ui_"):
+		return true
+	if name.begins_with("spatial_editor/"):
+		return true
+	if name.begins_with("godot/"):
+		return true
+	if name.begins_with("editor/"):
+		return true
+	return false
+
+func _filter_input_actions(actions: PackedStringArray, include_editor: bool) -> PackedStringArray:
+	var filtered: PackedStringArray = []
+	for action_name in actions:
+		if include_editor or not _is_editor_input_action(String(action_name)):
+			filtered.append(String(action_name))
+	return filtered
+
+func _get_project_input_action_names() -> PackedStringArray:
+	var seen: Dictionary = {}
+	var names: PackedStringArray = []
+	for prop in ProjectSettings.get_property_list():
+		var full_name: String = String(prop.get("name", ""))
+		if not full_name.begins_with("input/"):
+			continue
+		var parts: PackedStringArray = full_name.split("/")
+		if parts.size() < 2:
+			continue
+		var action_name: String = parts[1]
+		if action_name.is_empty() or seen.has(action_name) or _is_editor_input_action(action_name):
+			continue
+		seen[action_name] = true
+		names.append(action_name)
+	for action_name in InputMap.get_actions():
+		var name: String = String(action_name)
+		if name.is_empty() or seen.has(name) or _is_editor_input_action(name):
+			continue
+		seen[name] = true
+		names.append(name)
+	names.sort()
+	return names
+
+func _summarize_input_event(event: InputEvent) -> String:
+	if event == null:
+		return ""
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		return "key:%s physical:%s" % [
+			OS.get_keycode_string(key_event.keycode),
+			OS.get_keycode_string(key_event.physical_keycode),
+		]
+	if event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		return "mouse_button:%d" % mouse_event.button_index
+	if event is InputEventJoypadButton:
+		var pad_event := event as InputEventJoypadButton
+		return "joypad_button:%d" % pad_event.button_index
+	if event is InputEventJoypadMotion:
+		var motion_event := event as InputEventJoypadMotion
+		return "joypad_axis:%d" % motion_event.axis
+	return event.as_text()
+
+func _tool_get_runtime_errors(params: Dictionary = {}) -> Dictionary:
+	var max_count: int = clampi(int(params.get("max_count", 20)), 1, 50)
+	var clear_after: bool = bool(params.get("clear_after", true))
+	var bridge: EditorDebuggerPlugin = _debugger_error_bridge()
+	var errors: Array = []
+	if bridge != null and bridge.has_method("fetch_errors"):
+		errors = bridge.fetch_errors(clear_after, max_count)
+	return {
+		"ok": true,
+		"count": errors.size(),
+		"errors": errors,
+		"cleared": clear_after,
+	}
+
+func _tool_get_script_errors(params: Dictionary = {}) -> Dictionary:
+	var script_path: String = String(params.get("script_path", "")).strip_edges()
+	var clear_after: bool = bool(params.get("clear_after", true))
+	var max_count: int = clampi(int(params.get("max_count", 20)), 1, 50)
+	var errors: Array = []
+	if script_path.is_empty():
+		var open_paths: PackedStringArray = _get_open_script_paths()
+		for path in open_paths:
+			var parsed: Dictionary = _validate_gdscript_file(path)
+			if not parsed.is_empty():
+				errors.append(parsed)
+	else:
+		var parsed_one: Dictionary = _validate_gdscript_file(script_path)
+		if not parsed_one.is_empty():
+			errors.append(parsed_one)
+	var runtime: Dictionary = _tool_get_runtime_errors({
+		"max_count": max_count,
+		"clear_after": clear_after,
+	})
+	for item in runtime.get("errors", []):
+		if item is Dictionary:
+			errors.append(item)
+	errors = errors.slice(0, max_count)
+	return {
+		"ok": true,
+		"count": errors.size(),
+		"errors": errors,
+		"cleared": clear_after,
+	}
+
+func _get_open_script_paths() -> PackedStringArray:
+	var paths: PackedStringArray = []
+	var ei := _editor_interface()
+	if ei == null:
+		return paths
+	var script_editor: Node = ei.get_script_editor()
+	if script_editor == null or not script_editor.has_method("get_open_script_editors"):
+		return paths
+	for editor in script_editor.get_open_script_editors():
+		if editor != null and editor.has_method("get_edited_resource"):
+			var resource: Resource = editor.get_edited_resource()
+			if resource is Script and String(resource.resource_path).ends_with(".gd"):
+				paths.append(String(resource.resource_path))
+	return paths
+
+func _validate_gdscript_file(script_path: String) -> Dictionary:
+	if script_path.is_empty() or not script_path.ends_with(".gd"):
+		return {}
+	if not FileAccess.file_exists(script_path):
+		return {
+			"summary": "Script not found: %s" % script_path,
+			"source_file": script_path,
+			"source": "script_validator",
+			"warning": false,
+		}
+	var source: String = FileAccess.get_file_as_string(script_path)
+	var script := GDScript.new()
+	script.source_code = source
+	var err: Error = script.reload()
+	if err == OK:
+		return {}
+	var detail: String = _extract_gdscript_error_detail(source, err)
+	return {
+		"summary": "GDScript error in %s: %s" % [script_path, detail],
+		"source_file": script_path,
+		"error": detail,
+		"source": "script_validator",
+		"warning": false,
+	}
+
+func _extract_gdscript_error_detail(source: String, err: Error) -> String:
+	var base: String = error_string(err)
+	if err != ERR_PARSE_ERROR and err != ERR_COMPILATION_FAILED:
+		return base
+	# Heuristic scan for common parse errors when Godot only returns ERR_PARSE_ERROR.
+	# Escaneo heurístico de errores comunes cuando Godot solo devuelve ERR_PARSE_ERROR.
+	var lines: PackedStringArray = source.split("\n")
+	for line_idx in lines.size():
+		var line: String = lines[line_idx]
+		var trimmed: String = line.strip_edges()
+		if trimmed.begins_with("else:") or trimmed.begins_with("elif "):
+			var prev_idx: int = line_idx - 1
+			while prev_idx >= 0 and lines[prev_idx].strip_edges().is_empty():
+				prev_idx -= 1
+			if prev_idx >= 0:
+				var prev_line: String = lines[prev_idx].strip_edges()
+				if prev_line.begins_with("if ") and prev_line.contains("var "):
+					return "%s (line %d): variable declared in if-branch may be out of scope in else" % [base, line_idx + 1]
+	return base
+
+func _collect_scene_groups(node: Node, groups_map: Dictionary) -> void:
+	for group_name in node.get_groups():
+		if not groups_map.has(group_name):
+			groups_map[group_name] = []
+		groups_map[group_name].append(_rel_path(node))
+	for child in node.get_children():
+		_collect_scene_groups(child, groups_map)
 
 func _tool_get_selection() -> Dictionary:
 	var ei := _editor_interface()
@@ -911,6 +1426,9 @@ func _serialize_node_summary(node: Node, include_properties: bool = false) -> Di
 			data["scale"] = _vector2_to_array(n2d.scale)
 	if node is MeshInstance3D and (node as MeshInstance3D).mesh is BoxMesh:
 		data["mesh_size"] = _vector3_to_array(((node as MeshInstance3D).mesh as BoxMesh).size)
+	var node_groups: PackedStringArray = node.get_groups()
+	if not node_groups.is_empty():
+		data["groups"] = Array(node_groups)
 	if include_properties:
 		var props: Dictionary = {}
 		for prop_info in node.get_property_list():

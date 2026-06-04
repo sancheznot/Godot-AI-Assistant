@@ -5,6 +5,8 @@ extends RefCounted
 const DEFAULT_BASE_CONTEXT_PATH := "res://addons/ai_assistant_plugin/harness/base_context.md"
 const DEFAULT_THINKING_PATH := "res://addons/ai_assistant_plugin/harness/thinking_instructions.md"
 
+const ThinkingTags := preload("res://addons/ai_assistant_plugin/scripts/thinking_tags.gd")
+
 var config_manager: RefCounted = null
 var project_context: RefCounted = null
 var editor_tools: RefCounted = null
@@ -72,32 +74,154 @@ func get_active_layers_label(options: Dictionary, agent_mode: bool) -> String:
 	return "Harness: %s" % " · ".join(layers)
 
 func parse_model_response(raw_text: String) -> Dictionary:
-	var thinking: String = _extract_tag_block(raw_text, "thinking")
-	var content: String = raw_text
-	content = _remove_tag_block(content, "thinking")
+	var parsed: Dictionary = ThinkingTags.extract_all_thinking(raw_text)
 	return {
-		"thinking": thinking.strip_edges(),
-		"content": content.strip_edges(),
+		"thinking": String(parsed.get("thinking", "")),
+		"content": String(parsed.get("content", "")),
 		"raw": raw_text
 	}
 
 func format_for_display(parsed: Dictionary) -> String:
 	var thinking: String = String(parsed.get("thinking", ""))
 	var content: String = String(parsed.get("content", ""))
-	if thinking.is_empty():
-		return content
-	return "[Thinking]\n%s\n[/Thinking]\n\n%s" % [thinking, content]
+	var combined: String = content
+	if not thinking.is_empty():
+		combined = "[Thinking]\n%s\n[/Thinking]\n\n%s" % [thinking, content]
+	return sanitize_display_text(combined)
+
+func sanitize_display_text(text: String) -> String:
+	if text.is_empty():
+		return text
+	var lines: PackedStringArray = text.split("\n")
+	var output: PackedStringArray = []
+	var seen_normalized: Dictionary = {}
+	var emoji_streak: int = 0
+	var skipped_emoji: int = 0
+	var skipped_dup: int = 0
+	const MAX_LINES := 72
+	const MAX_CHARS := 9000
+	for line_idx in lines.size():
+		var line: String = lines[line_idx]
+		var trimmed: String = line.strip_edges()
+		if _is_jsonish_line(trimmed):
+			skipped_dup += 1
+			continue
+		if _is_filler_line(trimmed):
+			var filler_key: String = _normalize_line_for_dedupe(trimmed)
+			if seen_normalized.has(filler_key):
+				skipped_dup += 1
+				continue
+			seen_normalized[filler_key] = true
+		if _is_emoji_only_line(trimmed):
+			emoji_streak += 1
+			if emoji_streak > 0:
+				skipped_emoji += 1
+				continue
+		else:
+			emoji_streak = 0
+		var normalized: String = _normalize_line_for_dedupe(trimmed)
+		if not normalized.is_empty() and normalized.length() < 120 and seen_normalized.has(normalized):
+			skipped_dup += 1
+			continue
+		if not normalized.is_empty():
+			seen_normalized[normalized] = true
+		output.append(line)
+		if output.size() >= MAX_LINES:
+			var omitted: int = maxi(0, lines.size() - line_idx - 1)
+			output.append("... (%d lines omitted / %d líneas omitidas)" % [omitted, omitted])
+			break
+	var result: String = "\n".join(output)
+	if result.length() > MAX_CHARS:
+		result = "%s\n... (truncated / truncado)" % result.substr(0, MAX_CHARS)
+	var notes: PackedStringArray = []
+	if skipped_emoji > 0:
+		notes.append("(%d emoji lines hidden / emojis ocultos)" % skipped_emoji)
+	if skipped_dup > 0:
+		notes.append("(%d repetitive lines hidden / repeticiones ocultas)" % skipped_dup)
+	if not notes.is_empty():
+		result += "\n\n" + " ".join(notes)
+	return result.strip_edges()
+
+func _is_jsonish_line(line: String) -> bool:
+	var trimmed: String = line.strip_edges().replace("[lb]", "[").replace("[rb]", "]")
+	if trimmed.is_empty():
+		return false
+	if trimmed in ["]", "}", "{", "[", "},"]:
+		return true
+	if trimmed.begins_with("[") or trimmed.begins_with("{") or trimmed.begins_with("}"):
+		return true
+	if trimmed.contains("\"tool\"") or trimmed.contains("\"ok\"") or trimmed.contains("\"InputMap\""):
+		return true
+	return false
+
+func _is_filler_line(line: String) -> bool:
+	var lower: String = _normalize_line_for_dedupe(line)
+	if lower.is_empty() or lower.length() > 90:
+		return false
+	var markers: PackedStringArray = [
+		"listo", "pruébalo", "pruebalo", "avísame", "avísame", "esperando",
+		"script actualizado", "tarea completada", "problemas resueltos",
+		"ready", "try it", "waiting for", "task complete",
+	]
+	for marker in markers:
+		if lower.contains(marker):
+			return true
+	return false
+
+func has_degenerate_repetition(text: String) -> bool:
+	var lines: PackedStringArray = text.split("\n")
+	if lines.size() < 10:
+		return false
+	var emoji_only: int = 0
+	var normalized_counts: Dictionary = {}
+	for line in lines:
+		var trimmed: String = line.strip_edges()
+		if trimmed.is_empty():
+			continue
+		if _is_emoji_only_line(trimmed):
+			emoji_only += 1
+			continue
+		var key: String = _normalize_line_for_dedupe(trimmed)
+		if key.is_empty():
+			continue
+		normalized_counts[key] = int(normalized_counts.get(key, 0)) + 1
+	if emoji_only >= 6:
+		return true
+	for count in normalized_counts.values():
+		if int(count) >= 4:
+			return true
+	return false
+
+func _is_emoji_only_line(line: String) -> bool:
+	if line.is_empty():
+		return false
+	var stripped: String = line
+	for token in ["🎮", "✅", "❌", "⚠️", "✨", "🔧", "💭", "•", "—", "-"]:
+		stripped = stripped.replace(token, "")
+	return stripped.strip_edges().is_empty()
+
+func _normalize_line_for_dedupe(line: String) -> String:
+	var normalized: String = line.to_lower()
+	for token in ["🎮", "✅", "❌", "*", "#", "`", "—"]:
+		normalized = normalized.replace(token, "")
+	var regex := RegEx.new()
+	regex.compile("\\s+")
+	return regex.sub(normalized, " ", true).strip_edges()
 
 func _get_agent_instructions() -> String:
 	return (
 		"## Agent mode\n"
 		+ "You act over multiple steps using editor tools to ACTUALLY perform the user's task.\n"
 		+ "Do NOT chain read-only tools (get_scene_snapshot + get_scene_tree + inspect_node). "
+		+ "Use get_scene_groups to discover node groups (e.g. players). "
+		+ "Use get_input_map to read InputMap actions/keys — never ask the user for action names. "
+		+ "Use get_runtime_errors after playtests; use get_script_errors for GDScript parse errors in .gd files. "
 		+ "Use @ mentions / attached context for node paths first. At most ONE inspect tool if needed.\n"
 		+ "For scripts: call create_script in ONE step with attach_to + full content (unless user asked for code only).\n"
 		+ "Emit tool calls using exactly: <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>\n"
 		+ "After each tool batch you receive compact results — use them and ACT, do not re-inspect.\n"
 		+ "Only reply with a final summary (and NO <tool_call> blocks) AFTER the task is done. "
+		+ "Keep the final summary SHORT (max 8 lines). Never repeat the same sentence, checklist, or emoji spam.\n"
 		+ "If user wants code to paste themselves, reply with ```gdscript and do NOT call create_script."
 	)
 

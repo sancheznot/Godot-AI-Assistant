@@ -138,6 +138,8 @@ func create_default_config() -> void:
 			"max_response_retries": 3,
 			"ollama_max_num_ctx": 32768,
 			"active_skill": "godot_scene_editing",
+			"active_provider": "ollama",
+			"active_model": "llama3.2",
 			"skills_path": "res://addons/ai_assistant_plugin/skills",
 			"harness_base_context_path": "res://addons/ai_assistant_plugin/harness/base_context.md",
 			"harness_thinking_path": "res://addons/ai_assistant_plugin/harness/thinking_instructions.md"
@@ -228,6 +230,11 @@ func _migrate_legacy_config() -> void:
 		settings["max_response_retries"] = 3
 	if not settings.has("active_skill"):
 		settings["active_skill"] = "godot_scene_editing"
+	if not settings.has("active_provider"):
+		settings["active_provider"] = get_default_provider()
+	if not settings.has("active_model"):
+		var active_provider: String = String(settings.get("active_provider", get_default_provider()))
+		settings["active_model"] = String(get_provider_config(active_provider).get("model", _default_model_for_provider(active_provider)))
 	if not settings.has("skills_path"):
 		settings["skills_path"] = "res://addons/ai_assistant_plugin/skills"
 	if not settings.has("enable_thinking"):
@@ -367,6 +374,22 @@ func get_enabled_providers() -> Array[String]:
 		if is_provider_enabled(provider_id):
 			enabled.append(provider_id)
 	return enabled
+
+func get_active_model_selection() -> Dictionary:
+	var provider_id: String = String(get_setting("active_provider", get_default_provider()))
+	var model_id: String = String(get_setting("active_model", ""))
+	if model_id.is_empty():
+		model_id = String(get_provider_config(provider_id).get("model", _default_model_for_provider(provider_id)))
+	return {"provider_id": provider_id, "model_id": model_id}
+
+func set_active_model_selection(provider_id: String, model_id: String) -> void:
+	if provider_id.strip_edges().is_empty() or model_id.strip_edges().is_empty():
+		return
+	if not config.has("settings"):
+		config["settings"] = {}
+	config.settings["active_provider"] = provider_id
+	config.settings["active_model"] = model_id
+	save_config()
 
 func get_provider_label(provider_id: String) -> String:
 	return String(PROVIDER_LABELS.get(provider_id, provider_id))

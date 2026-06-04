@@ -105,12 +105,16 @@ var _follow_chat_scroll: bool = true
 var _scroll_programmatic: bool = false
 var _current_agent_log_text: String = ""
 var _active_copy_source: String = ""
+var _active_role_row: HBoxContainer = null
+var _last_request_payload: Dictionary = {}
 var _pending_attachments: Array = []
 var _syncing_capability_toggles: bool = false
 
 const AUTOCOMPLETE_MAX_HEIGHT := 120
 const ModelCapabilities := preload("res://addons/ai_assistant_plugin/scripts/model_capabilities.gd")
 const ComposerAttachments := preload("res://addons/ai_assistant_plugin/scripts/composer_attachments.gd")
+const ThinkingTags := preload("res://addons/ai_assistant_plugin/scripts/thinking_tags.gd")
+const HarnessDisplay := preload("res://addons/ai_assistant_plugin/scripts/harness.gd")
 
 func setup(
 	plugin: EditorPlugin,
@@ -187,6 +191,24 @@ func _ready() -> void:
 	_restore_chat_from_history()
 	_refresh_history_ui()
 	_setup_history_ui()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if prompt_text_edit == null or not prompt_text_edit.has_focus():
+		return
+	if not event is InputEventKey:
+		return
+	var key_event := event as InputEventKey
+	if not key_event.pressed or key_event.echo:
+		return
+	if not _is_paste_shortcut(key_event):
+		return
+	if _try_paste_clipboard_image():
+		get_viewport().set_input_as_handled()
+
+func _is_paste_shortcut(key_event: InputEventKey) -> bool:
+	if key_event.is_action("ui_paste"):
+		return true
+	return key_event.keycode == KEY_V and (key_event.ctrl_pressed or key_event.meta_pressed)
 
 func _apply_composer_styles() -> void:
 	var panel_style := StyleBoxFlat.new()
@@ -384,6 +406,71 @@ func _make_copy_button(get_text: Callable) -> Button:
 	)
 	return button
 
+func _make_retry_button(payload: Dictionary) -> Button:
+	var button := Button.new()
+	button.focus_mode = Control.FOCUS_NONE
+	button.flat = true
+	button.tooltip_text = _tr("ui.retry_tooltip")
+	if editor_plugin:
+		var base_control: Control = editor_plugin.get_editor_interface().get_base_control()
+		var reload_icon: Texture2D = base_control.get_theme_icon("Reload", "EditorIcons")
+		if reload_icon:
+			button.icon = reload_icon
+	if button.icon == null:
+		button.text = "↻"
+		button.add_theme_font_size_override("font_size", 15)
+	button.add_theme_color_override("font_color", COLOR_ERROR_ACCENT)
+	button.add_theme_color_override("font_hover_color", Color(1.0, 0.62, 0.62, 1.0))
+	var retry_payload: Dictionary = payload.duplicate(true)
+	button.pressed.connect(func() -> void:
+		if _request_busy:
+			status_label.text = _tr("ui.retry_busy")
+			return
+		_retry_request(retry_payload)
+	)
+	return button
+
+func _build_request_payload(provider_id: String, api_prompt: String, options: Dictionary) -> Dictionary:
+	var stored_options: Dictionary = options.duplicate(true)
+	stored_options.erase("conversation_messages")
+	return {
+		"provider_id": provider_id,
+		"api_prompt": api_prompt,
+		"options": stored_options,
+	}
+
+func _retry_request(payload: Dictionary) -> void:
+	if payload.is_empty():
+		status_label.text = _tr("ui.retry_unavailable")
+		return
+	var provider_id: String = String(payload.get("provider_id", ""))
+	var api_prompt: String = String(payload.get("api_prompt", ""))
+	if provider_id.is_empty() or api_prompt.is_empty():
+		status_label.text = _tr("ui.retry_unavailable")
+		return
+	if chat_history and chat_history.has_method("remove_last_message"):
+		var removed: Dictionary = chat_history.remove_last_message()
+		if not removed.is_empty():
+			var role: String = String(removed.get("role", ""))
+			var was_error: bool = bool(removed.get("is_error", false))
+			if role != "assistant" or not was_error:
+				chat_history.add_message(role, String(removed.get("content", "")), was_error, removed.get("attachments", []), removed.get("retry_payload", {}))
+	var children: Array = messages_container.get_children()
+	if not children.is_empty():
+		var last_panel: Node = children[children.size() - 1]
+		last_panel.queue_free()
+	_last_request_payload = payload.duplicate(true)
+	var options: Dictionary = payload.get("options", {}).duplicate(true)
+	if chat_history:
+		options["conversation_messages"] = chat_history.get_active_messages()
+	options["provider_id"] = provider_id
+	if not options.has("model_id"):
+		options["model_id"] = String(payload.get("model_id", ""))
+	_begin_assistant_message()
+	_show_assistant_status(_tr("ui.thinking"), _tr("ui.generating"))
+	_set_request_busy(true)
+	ai_handler.query_provider(provider_id, api_prompt, options)
+
 func _style_body_rich_text(label: RichTextLabel) -> void:
 	label.bbcode_enabled = true
 	label.fit_content = true
@@ -458,6 +545,7 @@ func _begin_assistant_message() -> void:
 	_style_role_label(role_label, COLOR_ASSISTANT_ACCENT, _tr("ui.role_assistant"))
 	role_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	role_row.add_child(role_label)
+	_active_role_row = role_row
 	role_row.add_child(_make_copy_button(func() -> String: return _active_copy_source))
 	
 	_active_status_panel = PanelContainer.new()
@@ -596,12 +684,17 @@ func _finish_assistant_message(text: String, is_error: bool = false) -> void:
 			"panel",
 			_make_bubble_style(Color(0.24, 0.12, 0.12, 1.0), COLOR_ERROR_ACCENT)
 		)
+		if not _last_request_payload.is_empty() and _active_role_row:
+			var retry_button: Button = _make_retry_button(_last_request_payload)
+			_active_role_row.add_child(retry_button)
+			_active_role_row.move_child(retry_button, 1)
 	_reset_active_assistant_refs()
 	_scroll_to_bottom(false)
 
 func _reset_active_assistant_refs() -> void:
 	_stop_status_animation()
 	_active_assistant_panel = null
+	_active_role_row = null
 	_active_status_panel = null
 	_active_content_body = null
 	_active_step_label = null
@@ -615,18 +708,23 @@ func _reset_active_assistant_refs() -> void:
 func _escape_bbcode(text: String) -> String:
 	return text.replace("[", "[lb]").replace("]", "[rb]")
 
+func _decode_bbcode_brackets(text: String) -> String:
+	return text.replace("[lb]", "[").replace("[rb]", "]")
+
+func _is_jsonish_line(line: String) -> bool:
+	var trimmed: String = _decode_bbcode_brackets(line.strip_edges())
+	if trimmed.is_empty():
+		return false
+	if trimmed in ["]", "}", "{", "[", "},"]:
+		return true
+	if trimmed.begins_with("[") or trimmed.begins_with("{") or trimmed.begins_with("}"):
+		return true
+	if trimmed.contains("\"tool\"") or trimmed.contains("\"ok\""):
+		return true
+	return false
+
 func _normalize_thinking_tags(text: String) -> String:
-	var regex := RegEx.new()
-	regex.compile("(?i)(?s)<thinking>(.*?)</thinking>")
-	var result: String = text
-	while true:
-		var match_result := regex.search(result)
-		if match_result == null:
-			break
-		var inner: String = match_result.get_string(1).strip_edges()
-		var block: String = "[Thinking]\n%s\n[/Thinking]" % inner
-		result = result.substr(0, match_result.get_start()) + block + result.substr(match_result.get_end())
-	return result
+	return ThinkingTags.replace_xml_thinking_tags(text)
 
 func _apply_inline_markdown(line: String) -> String:
 	var formatted: String = _escape_bbcode(line)
@@ -642,7 +740,7 @@ func _apply_inline_markdown(line: String) -> String:
 	return formatted
 
 func _split_assistant_segments(text: String) -> Array:
-	var normalized: String = _normalize_thinking_tags(text)
+	var normalized: String = _normalize_thinking_tags(_decode_bbcode_brackets(text))
 	var segments: Array = []
 	var thinking_regex := RegEx.new()
 	thinking_regex.compile("(?s)\\[Thinking\\](.*?)\\[/Thinking\\]")
@@ -683,8 +781,29 @@ func _split_tool_and_body_sections(text: String) -> Array:
 			segments.append({
 				"type": "tool_results",
 				"title": title,
-				"content": "\n".join(tool_lines).strip_edges()
+				"content": _decode_bbcode_brackets("\n".join(tool_lines).strip_edges())
 			})
+			continue
+		if trimmed == "---":
+			_flush_body_segment(segments, body_lines)
+			body_lines.clear()
+			i += 1
+			var legacy_tool_lines: PackedStringArray = []
+			while i < lines.size():
+				var legacy_line: String = lines[i].strip_edges()
+				if legacy_line.begins_with("### "):
+					break
+				if legacy_line.begins_with("Tool results:"):
+					i += 1
+					continue
+				legacy_tool_lines.append(lines[i])
+				i += 1
+			if not legacy_tool_lines.is_empty():
+				segments.append({
+					"type": "tool_results",
+					"title": "### Tool results",
+					"content": "\n".join(legacy_tool_lines).strip_edges()
+				})
 			continue
 		body_lines.append(line)
 		i += 1
@@ -692,11 +811,60 @@ func _split_tool_and_body_sections(text: String) -> Array:
 	return segments
 
 func _flush_body_segment(segments: Array, body_lines: PackedStringArray) -> void:
-	var content: String = "\n".join(body_lines).strip_edges()
+	var content: String = _decode_bbcode_brackets("\n".join(body_lines).strip_edges())
 	if content.is_empty():
 		return
+	var json_segment: Dictionary = _try_parse_tool_results_json(content)
+	if not json_segment.is_empty():
+		segments.append(json_segment)
+		return
+	if editor_tools != null and editor_tools.has_method("find_tool_result_json_spans"):
+		var spans: Array = editor_tools.find_tool_result_json_spans(content)
+		if not spans.is_empty():
+			var last_end: int = 0
+			for span in spans:
+				if not span is Dictionary:
+					continue
+				var start: int = int(span.get("start", 0))
+				var end: int = int(span.get("end", 0))
+				var before: String = content.substr(last_end, start - last_end).strip_edges()
+				if not before.is_empty():
+					for sub in _split_embedded_tool_calls(before):
+						segments.append(sub)
+				segments.append({
+					"type": "tool_results",
+					"title": _tr("ui.tool_results_block"),
+					"content": String(span.get("json", "")),
+				})
+				last_end = end
+			var tail: String = content.substr(last_end).strip_edges()
+			if not tail.is_empty():
+				for sub in _split_embedded_tool_calls(tail):
+					segments.append(sub)
+			return
 	for sub in _split_embedded_tool_calls(content):
 		segments.append(sub)
+
+func _try_parse_tool_results_json(text: String) -> Dictionary:
+	var trimmed: String = text.strip_edges()
+	if not trimmed.begins_with("["):
+		return {}
+	if editor_tools != null and editor_tools.has_method("looks_like_tool_results_json"):
+		if not editor_tools.looks_like_tool_results_json(trimmed):
+			return {}
+	elif editor_tools != null and editor_tools.has_method("extract_balanced_json_array"):
+		var block: String = editor_tools.extract_balanced_json_array(trimmed, 0)
+		if block.is_empty() or block.length() != trimmed.length():
+			return {}
+	else:
+		var parsed_check: Variant = JSON.parse_string(trimmed)
+		if not parsed_check is Array or parsed_check.is_empty():
+			return {}
+	return {
+		"type": "tool_results",
+		"title": _tr("ui.tool_results_block"),
+		"content": trimmed,
+	}
 
 func _split_embedded_tool_calls(text: String) -> Array:
 	var segments: Array = []
@@ -741,17 +909,61 @@ func _split_body_code_blocks(text: String) -> Array:
 		last_end = match_result.get_end()
 	var tail: String = text.substr(last_end).strip_edges()
 	if not tail.is_empty():
-		for sub in _split_inline_tool_json(tail):
-			if sub is Dictionary:
-				segments.append(sub)
+		var json_segment: Dictionary = _try_parse_tool_results_json(tail)
+		if not json_segment.is_empty():
+			segments.append(json_segment)
+		else:
+			for sub in _split_inline_tool_json(tail):
+				if sub is Dictionary:
+					segments.append(sub)
 	if segments.is_empty():
 		segments.append({"type": "body", "content": text.strip_edges()})
 	return segments
 
 func _split_inline_tool_json(text: String) -> Array:
-	# Inline `{"tool":"..."}` blocks (common in model numbered lists).
-	# Bloques inline `{"tool":"..."}` (comunes en listas numeradas del modelo).
 	var segments: Array = []
+	if editor_tools != null and editor_tools.has_method("find_tool_result_json_spans"):
+		var result_spans: Array = editor_tools.find_tool_result_json_spans(text)
+		if not result_spans.is_empty():
+			var last_end: int = 0
+			for span in result_spans:
+				if not span is Dictionary:
+					continue
+				var start: int = int(span.get("start", 0))
+				var end: int = int(span.get("end", 0))
+				var before: String = text.substr(last_end, start - last_end).strip_edges()
+				if not before.is_empty():
+					segments.append({"type": "body", "content": before})
+				segments.append({
+					"type": "tool_results",
+					"title": _tr("ui.tool_results_block"),
+					"content": String(span.get("json", "")),
+				})
+				last_end = end
+			var tail: String = text.substr(last_end).strip_edges()
+			if not tail.is_empty():
+				segments.append({"type": "body", "content": tail})
+			return segments
+	if editor_tools != null and editor_tools.has_method("find_tool_call_spans"):
+		var spans: Array = editor_tools.find_tool_call_spans(text)
+		if not spans.is_empty():
+			var last_end: int = 0
+			for span in spans:
+				if not span is Dictionary:
+					continue
+				var start: int = int(span.get("start", 0))
+				var end: int = int(span.get("end", 0))
+				var before: String = text.substr(last_end, start - last_end).strip_edges()
+				if not before.is_empty():
+					segments.append({"type": "body", "content": before})
+				var json_text: String = String(span.get("json", "")).strip_edges()
+				if not json_text.is_empty():
+					segments.append({"type": "tool_calls", "content": json_text})
+				last_end = end
+			var tail: String = text.substr(last_end).strip_edges()
+			if not tail.is_empty():
+				segments.append({"type": "body", "content": tail})
+			return segments
 	var inline_regex := RegEx.new()
 	inline_regex.compile("`(\\{[^`]*\"tool\"[^`]*\\})`")
 	var last_end: int = 0
@@ -768,6 +980,10 @@ func _split_inline_tool_json(text: String) -> Array:
 		segments.append({"type": "body", "content": text.strip_edges()})
 	return segments
 
+func _sanitize_assistant_display_text(text: String) -> String:
+	var harness := HarnessDisplay.new()
+	return harness.sanitize_display_text(text)
+
 func _populate_assistant_content(container: VBoxContainer, text: String, is_error: bool = false) -> void:
 	for child in container.get_children():
 		child.queue_free()
@@ -781,19 +997,27 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 		var content: String = String(segment.get("content", ""))
 		if content.is_empty():
 			continue
+		if segment_type == "body":
+			content = _sanitize_assistant_display_text(content)
+		if content.is_empty():
+			continue
 		if segment_type == "thinking":
 			container.add_child(_make_collapsible_thinking_block(content))
 		elif segment_type == "tool_results":
+			var summary: String = _summarize_tool_content_for_display(content).strip_edges().replace("\n", "   ·   ")
+			if not summary.is_empty() and summary != "(empty tool results)":
+				container.add_child(_make_tool_summary_label(summary))
 			var title: String = String(segment.get("title", _tr("ui.tool_results_block")))
 			container.add_child(_make_collapsible_detail_block(
 				title,
 				content,
 				_tr("ui.tool_results_show"),
 				_tr("ui.tool_results_hide"),
-				_format_tool_detail_bbcode,
+				_summarize_tool_content_for_display,
 				Color(0.1, 0.14, 0.12, 1.0),
 				Color(0.22, 0.38, 0.3, 1.0),
-				content
+				content,
+				false
 			))
 		elif segment_type == "tool_calls":
 			container.add_child(_make_collapsible_detail_block(
@@ -801,10 +1025,11 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 				content,
 				_tr("ui.tool_calls_show"),
 				_tr("ui.tool_calls_hide"),
-				_format_tool_detail_bbcode,
+				_summarize_tool_content_for_display,
 				Color(0.1, 0.12, 0.16, 1.0),
 				Color(0.28, 0.34, 0.46, 1.0),
-				content
+				content,
+				false
 			))
 		elif segment_type == "code":
 			container.add_child(_make_collapsible_detail_block(
@@ -815,7 +1040,8 @@ func _populate_assistant_content(container: VBoxContainer, text: String, is_erro
 				_format_tool_detail_bbcode,
 				Color(0.12, 0.11, 0.15, 1.0),
 				Color(0.34, 0.3, 0.42, 1.0),
-				content
+				content,
+				true
 			))
 		else:
 			container.add_child(_make_body_rich_label(_format_body_bbcode(content)))
@@ -825,6 +1051,28 @@ func _make_body_rich_label(bbcode: String) -> RichTextLabel:
 	_style_body_rich_text(label)
 	label.text = bbcode
 	return label
+
+func _make_tool_summary_label(summary: String) -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.1, 0.14, 0.12, 0.85)
+	style.border_color = Color(0.22, 0.38, 0.3, 0.9)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", style)
+	var label := Label.new()
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", Color(0.72, 0.88, 0.78, 1.0))
+	label.text = summary
+	panel.add_child(label)
+	return panel
 
 func _make_collapsible_thinking_block(thinking_text: String) -> PanelContainer:
 	return _make_collapsible_detail_block(
@@ -846,7 +1094,8 @@ func _make_collapsible_detail_block(
 	format_fn: Callable,
 	bg_color: Color,
 	border_color: Color,
-	copy_source: String = ""
+	copy_source: String = "",
+	use_bbcode: bool = true
 ) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -863,7 +1112,12 @@ func _make_collapsible_detail_block(
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	panel.add_child(vbox)
-	var line_count: int = maxi(1, detail_text.split("\n", false).size())
+	var preview_text: String = detail_text
+	if format_fn.is_valid():
+		var method_name: String = format_fn.get_method()
+		if method_name == "_format_tool_detail_bbcode" or method_name == "_summarize_tool_content_for_display":
+			preview_text = format_fn.call(detail_text)
+	var line_count: int = maxi(1, preview_text.split("\n", false).size())
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -880,25 +1134,50 @@ func _make_collapsible_detail_block(
 	header.add_child(toggle)
 	if not copy_source.is_empty():
 		header.add_child(_make_copy_button(func() -> String: return copy_source))
-	var body := RichTextLabel.new()
-	_style_body_rich_text(body)
-	body.visible = false
-	body.text = format_fn.call(detail_text)
-	vbox.add_child(body)
-	toggle.pressed.connect(func() -> void:
-		body.visible = not body.visible
-		toggle.text = _tr(hide_key) if body.visible else _tr(show_key, [line_count])
-		if body.visible and _follow_chat_scroll:
-			call_deferred("_scroll_to_bottom", false)
-	)
+	var formatted: String = format_fn.call(detail_text) if format_fn.is_valid() else detail_text
+	if use_bbcode:
+		var body := RichTextLabel.new()
+		_style_body_rich_text(body)
+		body.visible = false
+		body.text = formatted
+		vbox.add_child(body)
+		toggle.pressed.connect(func() -> void:
+			body.visible = not body.visible
+			toggle.text = _tr(hide_key) if body.visible else _tr(show_key, [line_count])
+			if body.visible and _follow_chat_scroll:
+				call_deferred("_scroll_to_bottom", false)
+		)
+	else:
+		var body := Label.new()
+		body.visible = false
+		body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		body.add_theme_font_size_override("font_size", 12)
+		body.add_theme_color_override("font_color", Color(0.78, 0.82, 0.9, 1.0))
+		body.text = formatted
+		vbox.add_child(body)
+		toggle.pressed.connect(func() -> void:
+			body.visible = not body.visible
+			toggle.text = _tr(hide_key) if body.visible else _tr(show_key, [line_count])
+			if body.visible and _follow_chat_scroll:
+				call_deferred("_scroll_to_bottom", false)
+		)
 	return panel
 
 func _format_tool_detail_bbcode(text: String) -> String:
-	var lines: PackedStringArray = text.split("\n")
-	var output: PackedStringArray = []
-	for line in lines:
-		output.append("[color=#9aa3b2]%s[/color]" % _escape_bbcode(line))
-	return "\n".join(output)
+	var display: String = _summarize_tool_content_for_display(text)
+	# Prevent closing the [code] tag accidentally / Evitar cerrar el tag [code] por accidente
+	display = display.replace("[/code]", "[lb]/code]")
+	# [code] blocks keep brackets literal / [code] no interpreta corchetes como BBCode
+	return "[code]%s[/code]" % display
+
+func _summarize_tool_content_for_display(text: String) -> String:
+	if editor_tools != null and editor_tools.has_method("format_tool_results_for_display"):
+		return editor_tools.format_tool_results_for_display(text)
+	var trimmed: String = text.strip_edges()
+	if trimmed.length() > 5000:
+		return "%s\n\n... (%d chars truncated)" % [trimmed.substr(0, 5000), trimmed.length() - 5000]
+	return trimmed
 
 func _format_thinking_bbcode(thinking_text: String) -> String:
 	var lines: PackedStringArray = thinking_text.split("\n")
@@ -924,7 +1203,7 @@ func _format_body_bbcode(text: String) -> String:
 		if trimmed.begins_with("### Step "):
 			var step_title: String = trimmed.substr(3).strip_edges()
 			output.append("")
-			output.append("[font_size=14][color=#9cdcfe][b]%s[/b][/color][/font_size]" % _escape_bbcode(step_title))
+			output.append("[font_size=13][color=#9cdcfe][b]%s[/b][/color][/font_size]" % _escape_bbcode(step_title))
 			output.append("[color=#3a3f4a]────────────────[/color]")
 			continue
 		if trimmed.begins_with("### Tool results") or trimmed.begins_with("### Tool parse warning"):
@@ -937,6 +1216,22 @@ func _format_body_bbcode(text: String) -> String:
 			continue
 		if trimmed.is_empty():
 			output.append("")
+			continue
+		if _is_jsonish_line(trimmed):
+			continue
+		if trimmed.begins_with("(") and ("hidden" in trimmed or "ocultas" in trimmed or "omitted" in trimmed or "omitidas" in trimmed):
+			output.append("[font_size=11][color=#5c6370][i]%s[/i][/font_size]" % _escape_bbcode(trimmed))
+			continue
+		if trimmed.begins_with("|"):
+			if _is_table_separator_row(trimmed):
+				continue
+			output.append(_format_table_row_bbcode(trimmed))
+			continue
+		if trimmed.begins_with("✅") or trimmed.begins_with("✓"):
+			output.append("[color=#7dcea0][b]%s[/b][/color]" % _apply_inline_markdown(trimmed))
+			continue
+		if trimmed.begins_with("❌") or trimmed.begins_with("✗"):
+			output.append("[color=#ff8a8a][b]%s[/b][/color]" % _apply_inline_markdown(trimmed))
 			continue
 		var list_match := list_number_regex.search(trimmed)
 		if list_match:
@@ -952,6 +1247,20 @@ func _format_body_bbcode(text: String) -> String:
 			continue
 		output.append(_apply_inline_markdown(line))
 	return "\n".join(output)
+
+func _is_table_separator_row(line: String) -> bool:
+	var stripped: String = line.replace("|", "").replace("-", "").replace(":", "").strip_edges()
+	return stripped.is_empty()
+
+func _format_table_row_bbcode(line: String) -> String:
+	var cells: PackedStringArray = []
+	for part in line.split("|"):
+		var cell: String = part.strip_edges()
+		if not cell.is_empty():
+			cells.append(_apply_inline_markdown(cell))
+	if cells.is_empty():
+		return _apply_inline_markdown(line)
+	return "[font_size=12][color=#c5cad6]%s[/color][/font_size]" % "  │  ".join(cells)
 
 func _format_assistant_bbcode(text: String, is_error: bool = false) -> String:
 	if is_error:
@@ -973,7 +1282,7 @@ func _format_assistant_bbcode(text: String, is_error: bool = false) -> String:
 			parts.append(_format_body_bbcode(content))
 	return "\n\n".join(parts)
 
-func _append_assistant_message_static(text: String, is_error: bool = false) -> void:
+func _append_assistant_message_static(text: String, is_error: bool = false, retry_payload: Dictionary = {}) -> void:
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var accent: Color = COLOR_ERROR_ACCENT if is_error else COLOR_ASSISTANT_ACCENT
@@ -989,6 +1298,8 @@ func _append_assistant_message_static(text: String, is_error: bool = false) -> v
 	_style_role_label(role_label, accent, _tr("ui.role_assistant"))
 	role_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	role_row.add_child(role_label)
+	if is_error and not retry_payload.is_empty():
+		role_row.add_child(_make_retry_button(retry_payload))
 	var copy_text: String = text
 	role_row.add_child(_make_copy_button(func() -> String: return copy_text))
 	var body := VBoxContainer.new()
@@ -1010,7 +1321,11 @@ func _restore_chat_from_history() -> void:
 			if role == "user":
 				_append_user_message(content)
 			elif role == "assistant":
-				_append_assistant_message_static(content, bool(message.get("is_error", false)))
+				var retry_payload: Dictionary = message.get("retry_payload", {})
+				if retry_payload is Dictionary:
+					_append_assistant_message_static(content, bool(message.get("is_error", false)), retry_payload)
+				else:
+					_append_assistant_message_static(content, bool(message.get("is_error", false)))
 	_scroll_to_bottom(false)
 
 func _refresh_history_ui() -> void:
@@ -1956,25 +2271,85 @@ func _refresh_attachments_ui() -> void:
 		var item: Dictionary = _pending_attachments[index]
 		if not item is Dictionary:
 			continue
-		var chip := HBoxContainer.new()
-		chip.add_theme_constant_override("separation", 4)
-		var label := Label.new()
-		var kind: String = String(item.get("kind", ""))
-		label.text = "🖼 %s" % item.get("name", "image") if kind == "image" else "📎 %s" % item.get("name", "file")
-		label.add_theme_font_size_override("font_size", 11)
-		label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.92, 1.0))
-		chip.add_child(label)
-		var remove_btn := Button.new()
-		remove_btn.text = "×"
-		remove_btn.flat = true
-		remove_btn.focus_mode = Control.FOCUS_NONE
-		remove_btn.custom_minimum_size = Vector2(20, 20)
-		var captured_index: int = index
-		remove_btn.pressed.connect(func() -> void:
-			_remove_attachment_at(captured_index)
-		)
-		chip.add_child(remove_btn)
-		attachments_vbox.add_child(chip)
+		attachments_vbox.add_child(_make_attachment_chip(item, index))
+
+func _make_attachment_chip(item: Dictionary, index: int) -> PanelContainer:
+	var panel := PanelContainer.new()
+	var chip_style := StyleBoxFlat.new()
+	chip_style.bg_color = Color(0.11, 0.13, 0.17, 1.0)
+	chip_style.border_color = Color(0.28, 0.32, 0.42, 1.0)
+	chip_style.set_border_width_all(1)
+	chip_style.set_corner_radius_all(8)
+	chip_style.content_margin_left = 6
+	chip_style.content_margin_right = 6
+	chip_style.content_margin_top = 6
+	chip_style.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", chip_style)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	panel.add_child(row)
+	var kind: String = String(item.get("kind", ""))
+	if kind == "image":
+		var preview_tex: Texture2D = ComposerAttachments.create_preview_texture(item)
+		if preview_tex != null:
+			var preview := TextureRect.new()
+			preview.custom_minimum_size = Vector2(52, 52)
+			preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+			preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			preview.texture = preview_tex
+			row.add_child(preview)
+	var label := Label.new()
+	label.text = String(item.get("name", "file"))
+	label.custom_minimum_size.x = 72
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	label.add_theme_font_size_override("font_size", 11)
+	label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.92, 1.0))
+	row.add_child(label)
+	var remove_btn := Button.new()
+	remove_btn.text = "×"
+	remove_btn.flat = true
+	remove_btn.focus_mode = Control.FOCUS_NONE
+	remove_btn.custom_minimum_size = Vector2(20, 20)
+	var captured_index: int = index
+	remove_btn.pressed.connect(func() -> void:
+		_remove_attachment_at(captured_index)
+	)
+	row.add_child(remove_btn)
+	return panel
+
+func _register_attachment(result: Dictionary, require_image: bool = false) -> bool:
+	if not bool(result.get("ok", false)):
+		status_label.text = String(result.get("error", _tr("ui.attach_failed")))
+		return false
+	if require_image and String(result.get("kind", "")) != "image":
+		status_label.text = _tr("ui.attach_not_image")
+		return false
+	if not require_image and String(result.get("kind", "")) == "image":
+		if attach_image_button.disabled:
+			status_label.text = _tr("ui.vision_unsupported")
+			return false
+	var result_path: String = String(result.get("path", ""))
+	for existing in _pending_attachments:
+		if existing is Dictionary and String(existing.get("path", "")) == result_path:
+			status_label.text = _tr("ui.attach_duplicate")
+			return false
+	_pending_attachments.append(result)
+	_refresh_attachments_ui()
+	return true
+
+func _try_paste_clipboard_image() -> bool:
+	var clipboard_image: Image = DisplayServer.clipboard_get_image()
+	if clipboard_image == null or clipboard_image.is_empty():
+		return false
+	if attach_image_button.disabled:
+		status_label.text = _tr("ui.attach_paste_need_vision")
+		return true
+	var result: Dictionary = ComposerAttachments.create_attachment_from_clipboard_image(clipboard_image)
+	if not _register_attachment(result, true):
+		return true
+	status_label.text = _tr("ui.attach_pasted")
+	prompt_text_edit.grab_focus()
+	return true
 
 func _remove_attachment_at(index: int) -> void:
 	if index < 0 or index >= _pending_attachments.size():
@@ -1999,22 +2374,8 @@ func _add_attachment_from_path(path: String, as_image: bool) -> void:
 		status_label.text = _tr("ui.vision_unsupported")
 		return
 	var result: Dictionary = ComposerAttachments.create_attachment_from_path(path)
-	if not bool(result.get("ok", false)):
-		status_label.text = String(result.get("error", _tr("ui.attach_failed")))
-		return
-	if as_image and String(result.get("kind", "")) != "image":
-		status_label.text = _tr("ui.attach_not_image")
-		return
-	if not as_image and String(result.get("kind", "")) == "image":
-		if attach_image_button.disabled:
-			status_label.text = _tr("ui.vision_unsupported")
-			return
-	for existing in _pending_attachments:
-		if existing is Dictionary and String(existing.get("path", "")) == String(result.get("path", "")):
-			status_label.text = _tr("ui.attach_duplicate")
-			return
-	_pending_attachments.append(result)
-	_refresh_attachments_ui()
+	if _register_attachment(result, as_image):
+		status_label.text = _tr("ui.attach_added")
 
 func _on_attach_file_pressed() -> void:
 	attach_file_dialog.popup_centered_ratio(0.6)
@@ -2071,6 +2432,10 @@ func _on_prompt_gui_input(event: InputEvent) -> void:
 		var key_event := event as InputEventKey
 		if not key_event.pressed or key_event.echo:
 			return
+		if _is_paste_shortcut(key_event):
+			if _try_paste_clipboard_image():
+				get_viewport().set_input_as_handled()
+				return
 		if autocomplete_panel.visible and not _autocomplete_items.is_empty():
 			if key_event.keycode in [KEY_UP, KEY_DOWN]:
 				if key_event.keycode == KEY_UP:
@@ -2091,6 +2456,8 @@ func _on_prompt_gui_input(event: InputEvent) -> void:
 		if key_event.keycode != KEY_ENTER and key_event.keycode != KEY_KP_ENTER:
 			return
 		if key_event.shift_pressed:
+			prompt_text_edit.insert_text_at_caret("\n")
+			get_viewport().set_input_as_handled()
 			return
 		_on_send_button_pressed()
 		get_viewport().set_input_as_handled()
@@ -2126,9 +2493,11 @@ func setup_model_dropdown() -> void:
 		return
 	
 	send_button.disabled = false
-	var default_provider: String = config_manager.get_default_provider()
-	var default_model: String = String(config_manager.get_provider_config(default_provider).get("model", ""))
+	var active_selection: Dictionary = config_manager.get_active_model_selection()
+	var target_provider: String = String(active_selection.get("provider_id", config_manager.get_default_provider()))
+	var target_model: String = String(active_selection.get("model_id", ""))
 	var selected_index: int = 0
+	var found_selection: bool = false
 	
 	# Group models by provider with labeled separators in the popup.
 	# Agrupar modelos por proveedor con separadores etiquetados en el popup.
@@ -2154,16 +2523,26 @@ func setup_model_dropdown() -> void:
 			model_dropdown.add_item(_get_model_dropdown_label(entry))
 			var index: int = model_dropdown.item_count - 1
 			model_dropdown.set_item_metadata(index, entry)
-			if String(entry.get("provider_id", "")) == default_provider and String(entry.get("model_id", "")) == default_model:
+			if not found_selection and String(entry.get("provider_id", "")) == target_provider and String(entry.get("model_id", "")) == target_model:
 				selected_index = index
+				found_selection = true
 	
 	model_dropdown.select(selected_index)
 	_style_option_popup(model_dropdown.get_popup())
 	_update_capability_toggles()
 
 func _on_model_selected(_index: int) -> void:
+	_persist_active_model_selection()
 	_update_capability_toggles()
 	_update_harness_label()
+
+func _persist_active_model_selection() -> void:
+	var entry: Dictionary = _get_selected_model_entry()
+	var provider_id: String = String(entry.get("provider_id", ""))
+	var model_id: String = String(entry.get("model_id", ""))
+	if provider_id.is_empty() or model_id.is_empty():
+		return
+	config_manager.set_active_model_selection(provider_id, model_id)
 
 func _get_selected_model_entry() -> Dictionary:
 	if model_dropdown.item_count == 0:
@@ -2216,6 +2595,7 @@ func _on_send_button_pressed() -> void:
 	if provider_id.is_empty() or model_id.is_empty():
 		status_label.text = _tr("ui.status_enable_provider")
 		return
+	config_manager.set_active_model_selection(provider_id, model_id)
 	
 	var image_count: int = ComposerAttachments.get_image_attachments(_pending_attachments).size()
 	if image_count > 0 and (vision_checkbox.disabled or not vision_checkbox.button_pressed):
@@ -2251,6 +2631,7 @@ func _on_send_button_pressed() -> void:
 	_clear_pending_attachments()
 	_update_harness_label()
 	_refresh_history_ui()
+	_last_request_payload = _build_request_payload(provider_id, api_prompt, options)
 	
 	if _request_busy:
 		ai_handler.query_provider(provider_id, api_prompt, options)
@@ -2438,7 +2819,7 @@ func _on_query_failed(error_message: String) -> void:
 	_stop_status_animation()
 	_current_agent_log_text = ""
 	_finish_assistant_message(error_message, true)
-	chat_history.add_message("assistant", error_message, true)
+	chat_history.add_message("assistant", error_message, true, [], _last_request_payload)
 	_refresh_history_ui()
 	_release_ui_after_terminal_event(_tr("ui.status_error"))
 	_sync_request_ui_state()

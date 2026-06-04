@@ -4,6 +4,7 @@ extends RefCounted
 
 const MAX_TEXT_CHARS := 8000
 const MAX_IMAGE_BYTES := 2_000_000
+const PASTE_CACHE_DIR := "user://ai_assistant_plugin/paste_cache/"
 const IMAGE_EXTENSIONS: PackedStringArray = ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
 const TEXT_EXTENSIONS: PackedStringArray = [
 	"gd", "cs", "tscn", "md", "txt", "json", "cfg", "tres", "import", "shader", "glsl",
@@ -28,6 +29,48 @@ static func create_attachment_from_path(path: String) -> Dictionary:
 	if is_image_path(normalized):
 		return _load_image_attachment(normalized)
 	return _load_text_attachment(normalized)
+
+static func create_attachment_from_clipboard_image(image: Image) -> Dictionary:
+	if image == null or image.is_empty():
+		return {"ok": false, "error": "Clipboard image is empty"}
+	var png_bytes: PackedByteArray = image.save_png_to_buffer()
+	if png_bytes.is_empty():
+		return {"ok": false, "error": "Could not encode clipboard image"}
+	if png_bytes.size() > MAX_IMAGE_BYTES:
+		return {
+			"ok": false,
+			"error": "Image too large (max %d MB)" % [MAX_IMAGE_BYTES / 1_000_000],
+		}
+	_ensure_paste_cache_dir()
+	var filename: String = "paste_%d.png" % Time.get_ticks_msec()
+	var saved_path: String = PASTE_CACHE_DIR + filename
+	var out := FileAccess.open(saved_path, FileAccess.WRITE)
+	if out == null:
+		return {"ok": false, "error": "Could not save pasted image"}
+	out.store_buffer(png_bytes)
+	out.close()
+	return {
+		"ok": true,
+		"kind": "image",
+		"path": saved_path,
+		"name": filename,
+		"mime": "image/png",
+		"base64": Marshalls.raw_to_base64(png_bytes),
+	}
+
+static func create_preview_texture(item: Dictionary) -> Texture2D:
+	if not item is Dictionary or String(item.get("kind", "")) != "image":
+		return null
+	var b64: String = String(item.get("base64", ""))
+	if b64.is_empty():
+		return null
+	var bytes: PackedByteArray = Marshalls.base64_to_raw(b64)
+	if bytes.is_empty():
+		return null
+	var img := Image.new()
+	if img.load_png_from_buffer(bytes) != OK and img.load_jpg_from_buffer(bytes) != OK:
+		return null
+	return ImageTexture.create_from_image(img)
 
 static func build_file_context_block(attachments: Array) -> String:
 	var sections: PackedStringArray = []
@@ -120,3 +163,7 @@ static func _mime_for_path(path: String) -> String:
 			return "image/bmp"
 		_:
 			return "application/octet-stream"
+
+static func _ensure_paste_cache_dir() -> void:
+	if not DirAccess.dir_exists_absolute(PASTE_CACHE_DIR):
+		DirAccess.make_dir_recursive_absolute(PASTE_CACHE_DIR)

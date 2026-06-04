@@ -56,6 +56,8 @@
 	},
 	"settings": {
 		"active_skill": "godot_scene_editing",
+		"active_provider": "ollama",
+		"active_model": "llama3.2",
 		"agent_max_steps": 8,
 		"context_depth": "intermediate",
 		"enable_agent_loop": true,
