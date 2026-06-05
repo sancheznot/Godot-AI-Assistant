@@ -227,6 +227,7 @@
 	"config.docs_include_godot_classes": "Clases del motor Godot (ClassDB)",
 	"config.docs_include_global_classes": "Scripts con class_name global del proyecto",
 	"config.index_docs_count": "%d entradas de docs",
+	"config.index_bounds_count": "%d bounds de escena",
 	"cmd.help": "Comandos disponibles:\n/clear — limpia el chat actual\n/new — chat nuevo\n/history — lista chats guardados\n/skill [id] — cambia skill activo (sin id = lista)\n/skills — ruta de la carpeta skills\n/context basic|intermediate|full — profundidad de contexto\n/models — refresca modelos\n/help — esta ayuda\n\nMenciones @:\n@scene @selection @res://ruta/archivo.tscn @skill:nombre",
 	"ac.cat.context": "Contexto",
 	"ac.cat.skills": "Skills",

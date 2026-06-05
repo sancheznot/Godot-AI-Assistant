@@ -7,7 +7,7 @@ signal sync_progress(ratio: float, message: String)
 signal sync_finished(success: bool, summary: Dictionary)
 signal index_deleted()
 
-const INDEX_VERSION := 1
+const INDEX_VERSION := 2
 const EMBEDDINGS_VERSION := 1
 const INDEX_ROOT := "user://ai_assistant_plugin/index/"
 const SCENEBUILDER_ROOTS: PackedStringArray = [
@@ -25,8 +25,10 @@ const MAX_SYMBOLS_PER_FILE := 24
 const DEFAULT_SEMANTIC_MAX_CHUNKS := 400
 const DEFAULT_SEMANTIC_CHUNK_SIZE := 1200
 const MAX_FILE_CHARS_FOR_EMBED := 12000
+const MAX_SCENE_BOUNDS := 800
 
 const ProjectDocsService := preload("res://addons/ai_assistant_plugin/scripts/project_docs_service.gd")
+const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spatial_bounds_util.gd")
 
 var _editor_plugin: EditorPlugin = null
 var _config_manager: RefCounted = null
@@ -39,6 +41,7 @@ var _ready: bool = false
 var _semantic_ready: bool = false
 var _pending_preserved_chunks: Array = []
 var _pending_embed_queue: Array = []
+var _bounds_budget: int = 0
 
 func setup(editor_plugin: EditorPlugin, config_mgr: RefCounted = null) -> void:
 	_editor_plugin = editor_plugin
@@ -73,6 +76,7 @@ func get_status() -> Dictionary:
 		"indexed_files": int(_index.get("file_count", 0)),
 		"scenebuilder_items": int(_index.get("scenebuilder_count", 0)),
 		"scene_summaries": int(_index.get("scene_count", 0)),
+		"scene_bounds": _count_scenes_with_bounds(),
 		"symbols": int(_index.get("symbol_count", 0)),
 		"docs": int(_index.get("doc_count", 0)),
 		"embedding_chunks": _embedding_chunk_count(),
@@ -101,6 +105,7 @@ func sync_index() -> void:
 		return
 	_syncing = true
 	_ready = false
+	_bounds_budget = MAX_SCENE_BOUNDS
 	sync_started.emit()
 	sync_progress.emit(0.0, "Scanning project…")
 	var built: Dictionary = {
@@ -241,7 +246,9 @@ func build_agent_bootstrap(user_prompt: String) -> String:
 		"Preloaded project index (do NOT re-scan res:// from scratch).",
 		"Use search_project_index (mode hybrid/semantic/lexical) or paths below.",
 		"Use search_project_docs for Godot API / README / class_name questions (all local).",
-		"Place assets with place_scene_builder_item / instance_scene.",
+		"Assets may live anywhere: res://assets/, res://Data/SceneBuilder (optional), etc.",
+		"Place prefabs with instance_scene or create_mesh_from_file; SceneBuilder-only: place_scene_builder_item.",
+		"For level layout: call get_scene_spatial_profile then get_asset_bounds before placing — match WORLD size (AABB), not scale alone.",
 	]
 	if ProjectDocsService.prompt_needs_docs(lower):
 		parts.append("Doc/API query detected — prefer search_project_docs with your question.")
@@ -274,6 +281,24 @@ func get_scenebuilder_entries() -> Array:
 	if not is_ready():
 		return []
 	return (_index.get("scenebuilder", []) as Array).duplicate(true)
+
+func get_cached_scene_bounds(scene_path: String) -> Dictionary:
+	if not is_ready() or scene_path.is_empty():
+		return {}
+	for entry in _index.get("scenes", []):
+		if not entry is Dictionary:
+			continue
+		if String(entry.get("path", "")) != scene_path:
+			continue
+		var size_arr: Variant = entry.get("local_bounds_size", [])
+		if size_arr is Array and (size_arr as Array).size() >= 3:
+			return {
+				"local_bounds_size": size_arr,
+				"local_bounds_center": entry.get("local_bounds_center", []),
+				"cached": true,
+				"source": "index",
+			}
+	return {}
 
 func search_docs(query: String, limit: int = 12, mode: String = "hybrid") -> Array:
 	return search(query, ["doc"], limit, mode)
@@ -776,20 +801,43 @@ func _add_scenebuilder_tscn(scene_path: String, category: String, built: Diction
 	built["scenebuilder"] = items
 
 func _summarize_scenes(built: Dictionary) -> void:
+	var scene_paths: Array = []
+	for entry in built.get("files", []):
+		if not entry is Dictionary:
+			continue
+		var path: String = String(entry.get("path", ""))
+		if path.ends_with(".tscn") and _should_compute_scene_bounds(path):
+			scene_paths.append(path)
+	scene_paths.sort_custom(func(a: String, b: String) -> bool:
+		return a.get_file().length() < b.get_file().length()
+	)
+	var scenes: Array = []
+	var bounds_done: int = 0
+	for path in scene_paths:
+		var summary := _summarize_tscn(path, bounds_done < _bounds_budget)
+		if summary.is_empty():
+			continue
+		if summary.has("local_bounds_size"):
+			bounds_done += 1
+		scenes.append(summary)
+		if bounds_done > 0 and bounds_done % 40 == 0:
+			sync_progress.emit(0.76, "Scene bounds %d/%d…" % [bounds_done, mini(scene_paths.size(), _bounds_budget)])
 	for entry in built.get("files", []):
 		if not entry is Dictionary:
 			continue
 		var path: String = String(entry.get("path", ""))
 		if not path.ends_with(".tscn"):
 			continue
-		var summary := _summarize_tscn(path)
+		if _should_compute_scene_bounds(path):
+			continue
+		var summary := _summarize_tscn(path, false)
 		if summary.is_empty():
 			continue
-		var scenes: Array = built.get("scenes", [])
 		scenes.append(summary)
-		built["scenes"] = scenes
+	built["scenes"] = scenes
+	built["scene_bounds_count"] = bounds_done
 
-func _summarize_tscn(path: String) -> Dictionary:
+func _summarize_tscn(path: String, compute_bounds: bool = false) -> Dictionary:
 	var text := _read_text_file(path)
 	if text.is_empty():
 		return {}
@@ -800,13 +848,38 @@ func _summarize_tscn(path: String) -> Dictionary:
 		if nodes.size() >= MAX_SCENE_NODES:
 			break
 		nodes.append(match_result.get_string(1))
-	return {
+	var summary := {
 		"kind": "scene",
 		"path": path,
 		"nodes": nodes,
 		"node_count": nodes.size(),
 		"tokens": _tokenize("%s %s" % [path, " ".join(PackedStringArray(nodes))]),
 	}
+	if compute_bounds and _bounds_budget > 0:
+		var bounds: Dictionary = SpatialBoundsUtil.compute_from_scene_path(path)
+		if bounds.has("size"):
+			summary["local_bounds_size"] = bounds.get("size", [])
+			summary["local_bounds_center"] = bounds.get("center", [])
+			_bounds_budget -= 1
+	return summary
+
+func _should_compute_scene_bounds(path: String) -> bool:
+	if path.is_empty():
+		return false
+	var lower := path.to_lower()
+	if lower.begins_with("res://addons/"):
+		if not (lower.contains("/scenebuilder/") or lower.contains("/data/scenebuilder/")):
+			return false
+	return true
+
+func _count_scenes_with_bounds() -> int:
+	if not _index.has("scenes"):
+		return int(_index.get("scene_bounds_count", 0))
+	var count := 0
+	for entry in _index.get("scenes", []):
+		if entry is Dictionary and entry.has("local_bounds_size"):
+			count += 1
+	return count
 
 # --- search scoring / puntuación ---
 
@@ -864,11 +937,18 @@ func _format_hit(hit: Dictionary) -> String:
 				entry.get("scene", ""),
 			]
 		"scene":
+			var bounds_note: String = ""
+			if entry.has("local_bounds_size"):
+				var bsize: Array = entry.get("local_bounds_size", [])
+				if bsize.size() >= 3:
+					bounds_note = " bounds@1=[%.2f,%.2f,%.2f]m" % [
+						float(bsize[0]), float(bsize[1]), float(bsize[2])
+					]
 			if entry.has("nodes"):
 				var nodes: Array = entry.get("nodes", [])
 				var node_preview: String = ", ".join(PackedStringArray(nodes).slice(0, 8))
-				return "Scene %s nodes=[%s]" % [entry.get("path", ""), node_preview]
-			return "Scene %s %s" % [entry.get("path", ""), preview]
+				return "Scene %s nodes=[%s]%s" % [entry.get("path", ""), node_preview, bounds_note]
+			return "Scene %s %s%s" % [entry.get("path", ""), preview, bounds_note]
 		"symbol":
 			if entry.has("name"):
 				return "Symbol %s in %s" % [entry.get("name", ""), entry.get("path", "")]

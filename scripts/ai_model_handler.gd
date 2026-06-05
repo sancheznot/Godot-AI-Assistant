@@ -295,7 +295,7 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_messages = _build_conversation_messages(user_prompt, options)
 	var bootstrap_context: String = _bootstrap_agent_context(user_prompt)
 	if not bootstrap_context.is_empty():
-		_agent_log.append("### Bootstrap\nContexto precargado (catálogo SceneBuilder + snapshot de escena).")
+		_agent_log.append("### Bootstrap\nContexto precargado (índice del proyecto + perfil espacial si aplica).")
 		_agent_messages.append({
 			"role": "user",
 			"content": bootstrap_context + _language_hint_suffix(),
@@ -1189,20 +1189,22 @@ func _tool_source_text(parsed: Dictionary, content: String, raw_text: String) ->
 func _bootstrap_agent_context(user_prompt: String) -> String:
 	if _agent_code_only:
 		return ""
+	var lower: String = user_prompt.to_lower()
 	if project_index != null and project_index.has_method("is_ready"):
 		if bool(config_manager.get_setting("enable_project_index", true)) and project_index.is_ready():
 			var indexed: String = String(project_index.build_agent_bootstrap(user_prompt))
 			if not indexed.is_empty():
 				if _active_user_language == "es":
-					return (
+					indexed = (
 						"Contexto precargado del índice (NO vuelvas a escanear res:// entero). "
-						+ "Usa search_project_index si necesitas más paths y EMPIEZA a colocar assets:\n"
+						+ "Usa search_project_index para assets en cualquier carpeta (SceneBuilder es opcional). "
+						+ "Antes de colocar props 3D: get_scene_spatial_profile + get_asset_bounds para escala correcta.\n"
 						+ indexed
 					)
+				indexed = _append_spatial_bootstrap(indexed, lower)
 				return indexed
 	if editor_tools == null:
 		return ""
-	var lower: String = user_prompt.to_lower()
 	var keywords: PackedStringArray = [
 		"mapa", "piso", "pisos", "mundo", "scenebuilder", "scene builder", "pared",
 		"floor_", "edificio", "escalera", "stairs", "constru", "build", "coloca",
@@ -1231,17 +1233,43 @@ func _bootstrap_agent_context(user_prompt: String) -> String:
 		editor_tools.compact_tool_results_for_context(tool_results)
 		if editor_tools else JSON.stringify(tool_results, "\t")
 	)
+	var fallback: String = ""
 	if _active_user_language == "es":
-		return (
+		fallback = (
 			"Contexto precargado (NO vuelvas a listar el proyecto entero). "
-			+ "Usa estos datos y EMPIEZA a colocar assets con place_scene_builder_item o instance_scene:\n"
+			+ "Usa estos datos; assets en cualquier carpeta res://; SceneBuilder es opcional. "
+			+ "Antes de colocar: get_scene_spatial_profile + get_asset_bounds.\n"
 			+ compact
 		)
-	return (
-		"Preloaded context (do NOT re-list the whole project). "
-		+ "Use this data and START placing assets with place_scene_builder_item or instance_scene:\n"
-		+ compact
-	)
+	else:
+		fallback = (
+			"Preloaded context (do NOT re-list the whole project). "
+			+ "Assets anywhere under res://; SceneBuilder optional. "
+			+ "Before placing: get_scene_spatial_profile + get_asset_bounds.\n"
+			+ compact
+		)
+	return _append_spatial_bootstrap(fallback, lower)
+
+func _prompt_needs_spatial_mapping(lower_prompt: String) -> bool:
+	var keywords: PackedStringArray = [
+		"mapa", "piso", "pisos", "mundo", "floor_", "edificio", "escalera", "stairs",
+		"constru", "build", "coloca", "tile", "nivel", "level", "layout",
+	]
+	for keyword in keywords:
+		if lower_prompt.contains(keyword):
+			return true
+	return false
+
+func _append_spatial_bootstrap(base: String, lower_prompt: String) -> String:
+	if editor_tools == null or not _prompt_needs_spatial_mapping(lower_prompt):
+		return base
+	var spatial: Dictionary = editor_tools.execute_tool("get_scene_spatial_profile", {"max_nodes": 60})
+	if not bool(spatial.get("ok", false)):
+		return base
+	var summary: String = String(spatial.get("mapping_summary", "")).strip_edges()
+	if summary.is_empty():
+		return base
+	return "%s\n\n## Spatial mapping (open scene)\n%s" % [base, summary]
 
 func _response_is_narration_only(content: String, parsed: Dictionary) -> bool:
 	var visible: String = _visible_response_text(content, parsed).to_lower()

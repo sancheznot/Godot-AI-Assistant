@@ -296,158 +296,252 @@ func _make_settings_section() -> PanelContainer:
 	return panel
 
 func _make_indexing_tab() -> Control:
-	var root := VBoxContainer.new()
-	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_theme_constant_override("separation", 10)
-	root.add_child(_make_section_header(_tr("config.indexing"), _tr("config.indexing_hint")))
+	var tab_root := VBoxContainer.new()
+	tab_root.name = "IndexingTab"
+	tab_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tab_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tab_root.add_theme_constant_override("separation", 10)
+	
+	var scroll := ScrollContainer.new()
+	scroll.name = "IndexingScroll"
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	
+	var scroll_content := VBoxContainer.new()
+	scroll_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll_content.add_theme_constant_override("separation", 10)
+	scroll.add_child(scroll_content)
+	
+	var header := _make_section_header(_tr("config.indexing"), _tr("config.indexing_hint"))
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll_content.add_child(header)
 	
 	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL_INNER, 8))
 	var grid := GridContainer.new()
 	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	grid.add_theme_constant_override("h_separation", 12)
 	grid.add_theme_constant_override("v_separation", 10)
+	if grid.has_method("set_column_stretch_ratio"):
+		grid.set_column_stretch_ratio(0, 0.38)
+		grid.set_column_stretch_ratio(1, 0.62)
 	panel.add_child(grid)
 	_index_section_grid = grid
 	
-	grid.add_child(_make_field_label(_tr("config.enable_project_index")))
-	var enable_index := CheckBox.new()
-	enable_index.name = "EnableProjectIndex"
-	enable_index.button_pressed = bool(config_manager.get_setting("enable_project_index", true))
-	enable_index.text = _tr("config.enable_project_index_hint")
-	_style_checkbox(enable_index)
-	grid.add_child(enable_index)
-	
-	grid.add_child(_make_field_label(_tr("config.index_on_startup")))
-	var index_startup := CheckBox.new()
-	index_startup.name = "IndexOnStartup"
-	index_startup.button_pressed = bool(config_manager.get_setting("index_on_startup", true))
-	index_startup.text = _tr("config.index_on_startup_hint")
-	_style_checkbox(index_startup)
-	grid.add_child(index_startup)
-	
-	grid.add_child(_make_field_label(_tr("config.index_auto_sync")))
-	var index_auto := CheckBox.new()
-	index_auto.name = "IndexAutoSync"
-	index_auto.button_pressed = bool(config_manager.get_setting("index_auto_sync", true))
-	index_auto.text = _tr("config.index_auto_sync_hint")
-	_style_checkbox(index_auto)
-	grid.add_child(index_auto)
-	
-	grid.add_child(_make_field_label(_tr("config.index_max_age_hours")))
-	var index_age := SpinBox.new()
-	index_age.name = "IndexMaxAgeHours"
-	index_age.min_value = 0
-	index_age.max_value = 720
-	index_age.step = 1
-	index_age.value = float(config_manager.get_setting("index_max_age_hours", 24))
-	index_age.custom_minimum_size = Vector2(120, 28)
-	_style_spin_box(index_age)
-	grid.add_child(index_age)
-	
-	grid.add_child(_make_field_label(_tr("config.enable_semantic_index")))
-	var enable_semantic := CheckBox.new()
-	enable_semantic.name = "EnableSemanticIndex"
-	enable_semantic.button_pressed = bool(config_manager.get_setting("enable_semantic_index", true))
-	enable_semantic.text = _tr("config.enable_semantic_index_hint")
-	_style_checkbox(enable_semantic)
-	grid.add_child(enable_semantic)
-	
-	grid.add_child(_make_field_label(_tr("config.embedding_model")))
-	var embedding_model := LineEdit.new()
-	embedding_model.name = "EmbeddingModel"
-	embedding_model.text = String(config_manager.get_setting("embedding_model", "nomic-embed-text"))
-	embedding_model.placeholder_text = "nomic-embed-text"
-	embedding_model.custom_minimum_size = Vector2(220, 28)
-	_style_line_edit(embedding_model)
-	grid.add_child(embedding_model)
-	
-	grid.add_child(_make_field_label(_tr("config.embedding_provider")))
-	var embedding_provider := OptionButton.new()
-	embedding_provider.name = "EmbeddingProvider"
-	for provider_option in [["ollama", "Ollama"], ["lmstudio", "LM Studio"]]:
-		embedding_provider.add_item(String(provider_option[1]))
-		embedding_provider.set_item_metadata(embedding_provider.item_count - 1, String(provider_option[0]))
-		if String(provider_option[0]) == String(config_manager.get_setting("embedding_provider", "ollama")):
-			embedding_provider.select(embedding_provider.item_count - 1)
-	_style_option_button(embedding_provider)
-	grid.add_child(embedding_provider)
-	
-	grid.add_child(_make_field_label(_tr("config.semantic_max_chunks")))
-	var semantic_chunks := SpinBox.new()
-	semantic_chunks.name = "SemanticMaxChunks"
-	semantic_chunks.min_value = 32
-	semantic_chunks.max_value = 2000
-	semantic_chunks.step = 32
-	semantic_chunks.value = float(config_manager.get_setting("semantic_max_chunks", 400))
-	semantic_chunks.custom_minimum_size = Vector2(120, 28)
-	_style_spin_box(semantic_chunks)
-	grid.add_child(semantic_chunks)
-	
-	grid.add_child(_make_field_label(_tr("config.enable_docs_index")))
-	var enable_docs := CheckBox.new()
-	enable_docs.name = "EnableDocsIndex"
-	enable_docs.button_pressed = bool(config_manager.get_setting("enable_docs_index", true))
-	enable_docs.text = _tr("config.enable_docs_index_hint")
-	_style_checkbox(enable_docs)
-	grid.add_child(enable_docs)
-	
-	grid.add_child(_make_field_label(_tr("config.docs_sources")))
+	_add_index_checkbox_row(
+		grid,
+		_tr("config.enable_project_index"),
+		"EnableProjectIndex",
+		_tr("config.enable_project_index_hint"),
+		bool(config_manager.get_setting("enable_project_index", true))
+	)
+	_add_index_checkbox_row(
+		grid,
+		_tr("config.index_on_startup"),
+		"IndexOnStartup",
+		_tr("config.index_on_startup_hint"),
+		bool(config_manager.get_setting("index_on_startup", true))
+	)
+	_add_index_checkbox_row(
+		grid,
+		_tr("config.index_auto_sync"),
+		"IndexAutoSync",
+		_tr("config.index_auto_sync_hint"),
+		bool(config_manager.get_setting("index_auto_sync", true))
+	)
+	_add_index_spin_row(
+		grid,
+		_tr("config.index_max_age_hours"),
+		"IndexMaxAgeHours",
+		0,
+		720,
+		1,
+		float(config_manager.get_setting("index_max_age_hours", 24))
+	)
+	_add_index_checkbox_row(
+		grid,
+		_tr("config.enable_semantic_index"),
+		"EnableSemanticIndex",
+		_tr("config.enable_semantic_index_hint"),
+		bool(config_manager.get_setting("enable_semantic_index", true))
+	)
+	_add_index_line_row(
+		grid,
+		_tr("config.embedding_model"),
+		"EmbeddingModel",
+		String(config_manager.get_setting("embedding_model", "nomic-embed-text")),
+		"nomic-embed-text"
+	)
+	_add_index_option_row(grid, _tr("config.embedding_provider"), "EmbeddingProvider")
+	_add_index_spin_row(
+		grid,
+		_tr("config.semantic_max_chunks"),
+		"SemanticMaxChunks",
+		32,
+		2000,
+		32,
+		float(config_manager.get_setting("semantic_max_chunks", 400))
+	)
+	_add_index_checkbox_row(
+		grid,
+		_tr("config.enable_docs_index"),
+		"EnableDocsIndex",
+		_tr("config.enable_docs_index_hint"),
+		bool(config_manager.get_setting("enable_docs_index", true))
+	)
+	grid.add_child(_make_index_field_label(_tr("config.docs_sources")))
 	var docs_sources := VBoxContainer.new()
 	docs_sources.name = "DocsSources"
-	docs_sources.add_theme_constant_override("separation", 4)
-	_docs_md_checkbox = CheckBox.new()
-	_docs_md_checkbox.name = "DocsIncludeProjectMd"
-	_docs_md_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_project_md", true))
-	_docs_md_checkbox.text = _tr("config.docs_include_project_md")
-	_style_checkbox(_docs_md_checkbox)
+	docs_sources.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	docs_sources.add_theme_constant_override("separation", 6)
+	_docs_md_checkbox = _make_index_source_checkbox(
+		"DocsIncludeProjectMd",
+		_tr("config.docs_include_project_md"),
+		bool(config_manager.get_setting("docs_include_project_md", true))
+	)
 	docs_sources.add_child(_docs_md_checkbox)
-	_docs_godot_checkbox = CheckBox.new()
-	_docs_godot_checkbox.name = "DocsIncludeGodotClasses"
-	_docs_godot_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_godot_classes", true))
-	_docs_godot_checkbox.text = _tr("config.docs_include_godot_classes")
-	_style_checkbox(_docs_godot_checkbox)
+	_docs_godot_checkbox = _make_index_source_checkbox(
+		"DocsIncludeGodotClasses",
+		_tr("config.docs_include_godot_classes"),
+		bool(config_manager.get_setting("docs_include_godot_classes", true))
+	)
 	docs_sources.add_child(_docs_godot_checkbox)
-	_docs_global_checkbox = CheckBox.new()
-	_docs_global_checkbox.name = "DocsIncludeGlobalClasses"
-	_docs_global_checkbox.button_pressed = bool(config_manager.get_setting("docs_include_global_classes", true))
-	_docs_global_checkbox.text = _tr("config.docs_include_global_classes")
-	_style_checkbox(_docs_global_checkbox)
+	_docs_global_checkbox = _make_index_source_checkbox(
+		"DocsIncludeGlobalClasses",
+		_tr("config.docs_include_global_classes"),
+		bool(config_manager.get_setting("docs_include_global_classes", true))
+	)
 	docs_sources.add_child(_docs_global_checkbox)
 	grid.add_child(docs_sources)
 	
-	root.add_child(panel)
+	scroll_content.add_child(panel)
+	tab_root.add_child(scroll)
 	
 	_index_status_label = Label.new()
+	_index_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_index_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_index_status_label.add_theme_font_size_override("font_size", 11)
 	_index_status_label.add_theme_color_override("font_color", COLOR_MUTED)
-	root.add_child(_index_status_label)
+	tab_root.add_child(_index_status_label)
 	
 	_index_progress_bar = ProgressBar.new()
+	_index_progress_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_index_progress_bar.custom_minimum_size = Vector2(0, 8)
 	_index_progress_bar.show_percentage = false
 	_index_progress_bar.value = 0
-	root.add_child(_index_progress_bar)
+	tab_root.add_child(_index_progress_bar)
 	
 	var button_row := HBoxContainer.new()
+	button_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button_row.add_theme_constant_override("separation", 8)
 	_index_sync_button = Button.new()
 	_index_sync_button.text = _tr("config.index_sync_now")
-	_index_sync_button.custom_minimum_size = Vector2(120, 30)
+	_index_sync_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_index_sync_button.custom_minimum_size = Vector2(0, 32)
 	_style_button(_index_sync_button, true)
 	_index_sync_button.pressed.connect(_on_index_sync_pressed)
 	button_row.add_child(_index_sync_button)
 	_index_delete_button = Button.new()
 	_index_delete_button.text = _tr("config.index_delete")
-	_index_delete_button.custom_minimum_size = Vector2(120, 30)
+	_index_delete_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_index_delete_button.custom_minimum_size = Vector2(0, 32)
 	_style_button(_index_delete_button, false)
 	_index_delete_button.pressed.connect(_on_index_delete_pressed)
 	button_row.add_child(_index_delete_button)
-	root.add_child(button_row)
+	tab_root.add_child(button_row)
 	
 	_refresh_index_status_label()
-	return root
+	return tab_root
+
+func _make_index_field_label(text: String) -> Label:
+	var label := _make_field_label(text)
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return label
+
+func _add_index_checkbox_row(
+	grid: GridContainer,
+	field_label: String,
+	node_name: String,
+	hint: String,
+	pressed: bool
+) -> void:
+	grid.add_child(_make_index_field_label(field_label))
+	var checkbox := CheckBox.new()
+	checkbox.name = node_name
+	checkbox.button_pressed = pressed
+	checkbox.text = hint
+	checkbox.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	checkbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_checkbox(checkbox)
+	grid.add_child(checkbox)
+
+func _add_index_spin_row(
+	grid: GridContainer,
+	field_label: String,
+	node_name: String,
+	min_value: float,
+	max_value: float,
+	step: float,
+	value: float
+) -> void:
+	grid.add_child(_make_index_field_label(field_label))
+	var spin := SpinBox.new()
+	spin.name = node_name
+	spin.min_value = min_value
+	spin.max_value = max_value
+	spin.step = step
+	spin.value = value
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spin.custom_minimum_size = Vector2(0, 28)
+	_style_spin_box(spin)
+	grid.add_child(spin)
+
+func _add_index_line_row(
+	grid: GridContainer,
+	field_label: String,
+	node_name: String,
+	text: String,
+	placeholder: String
+) -> void:
+	grid.add_child(_make_index_field_label(field_label))
+	var line := LineEdit.new()
+	line.name = node_name
+	line.text = text
+	line.placeholder_text = placeholder
+	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.custom_minimum_size = Vector2(0, 28)
+	_style_line_edit(line)
+	grid.add_child(line)
+
+func _add_index_option_row(grid: GridContainer, field_label: String, node_name: String) -> void:
+	grid.add_child(_make_index_field_label(field_label))
+	var option := OptionButton.new()
+	option.name = node_name
+	for provider_option in [["ollama", "Ollama"], ["lmstudio", "LM Studio"]]:
+		option.add_item(String(provider_option[1]))
+		option.set_item_metadata(option.item_count - 1, String(provider_option[0]))
+		if String(provider_option[0]) == String(config_manager.get_setting("embedding_provider", "ollama")):
+			option.select(option.item_count - 1)
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	option.custom_minimum_size = Vector2(0, 28)
+	_style_option_button(option)
+	grid.add_child(option)
+
+func _make_index_source_checkbox(node_name: String, text: String, pressed: bool) -> CheckBox:
+	var checkbox := CheckBox.new()
+	checkbox.name = node_name
+	checkbox.button_pressed = pressed
+	checkbox.text = text
+	checkbox.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	checkbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_checkbox(checkbox)
+	return checkbox
 
 func _refresh_index_status_label() -> void:
 	if _index_status_label == null:
@@ -471,7 +565,7 @@ func _refresh_index_status_label() -> void:
 				int(status.get("scenebuilder_items", 0)),
 				int(status.get("scene_summaries", 0)),
 				int(status.get("symbols", 0)),
-			]) + " · " + _tr("config.index_docs_count", [int(status.get("docs", 0))]),
+			]) + " · " + _tr("config.index_docs_count", [int(status.get("docs", 0))]) + " · " + _tr("config.index_bounds_count", [int(status.get("scene_bounds", 0))]),
 			semantic_line,
 		]
 	else:

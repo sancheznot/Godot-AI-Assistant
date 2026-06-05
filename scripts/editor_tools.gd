@@ -13,6 +13,8 @@ const ALLOWED_NODE_TYPES := [
 	"TileMap", "TileMapLayer", "CanvasLayer", "SubViewport", "CSGBox3D"
 ]
 
+const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spatial_bounds_util.gd")
+
 var _editor_plugin: EditorPlugin = null
 var _project_index: RefCounted = null
 
@@ -37,6 +39,8 @@ Scene workflow:
 Inspection (use ONE tool max, prefer @ mentions / attached context first):
 - get_scene_tree: params {"max_depth":3}
 - get_scene_snapshot: params {"max_depth":4}
+- get_scene_spatial_profile: params {"max_nodes":60} — world sizes, scales, floor Y levels of placed 3D objects (mapping intelligence)
+- get_asset_bounds: params {"scene_path":"res://assets/stairs.tscn"} OR {"node_path":"Floor_1/Ground_05"} — local/world AABB size in meters (NOT scale); use before placing props
 - get_scene_groups: params {} or {"group":"players"} to list nodes in one group
 - get_input_map: params {} for project actions only, or {"action":"action_interact"} for one action
 - get_runtime_errors: params {"max_count":20,"clear_after":true} — runtime debugger errors (play mode)
@@ -53,9 +57,10 @@ Inspection (use ONE tool max, prefer @ mentions / attached context first):
 
 Asset placement:
 - place_scene_builder_item: params {"item_path":"res://Data/SceneBuilder/Floor/Ground_05.tres","parent_node_path":"Floor_2","node_name":"Ground_05-n1","position":[-3.97,4,15.98],"scale":[100,100,100]}
-  parent_node_path MUST be a string (e.g. "Floor_2"). Alias parent_path also works. Floor_* containers are auto-created if missing.
+  SceneBuilder only (optional plugin). parent_node_path MUST be a string (e.g. "Floor_2"). Alias parent_path also works. Floor_* containers are auto-created if missing.
 - create_mesh_from_file: params {"mesh_path":"res://models/prop.glb","parent_node_path":"","node_name":"Prop","position":[0,0,0],"collision":true}
-- instance_scene: params {"scene_path":"res://Data/SceneBuilder/Wall/scenes/Wall_08.tscn","parent_node_path":"","node_name":"Wall1","position":[0,0,0]}
+- instance_scene: params {"scene_path":"res://assets/stairs/stairs_022.tscn","parent_node_path":"","node_name":"Stairs1","position":[0,0,0],"scale":[100,100,100],"rotation_degrees":[0,90,0]}
+  Use for ANY .tscn prefab (SceneBuilder or custom asset folders). BEFORE placing, call get_scene_spatial_profile + get_asset_bounds to match existing tile scale.
 
 Node editing:
 - add_node: params {"node_type":"Node3D","node_name":"MyNode","parent_node_path":""}
@@ -77,7 +82,9 @@ Scripting (create AND attach a script in ONE call):
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
-- To discover assets, use search_project_index, find_project_paths or list_scene_builder_catalog scoped to res://Data/SceneBuilder — do NOT call list_project_files repeatedly from res:// (results truncate).
+- To discover assets, use search_project_index or find_project_paths anywhere under res:// (assets folders, SceneBuilder, etc.) — do NOT call list_project_files repeatedly from res:// (results truncate).
+- SceneBuilder (res://Data/SceneBuilder) is OPTIONAL. Many projects use plain .tscn/.glb under res://assets/ — use instance_scene or create_mesh_from_file.
+- For level building / map layout: call get_scene_spatial_profile first (reference sizes + floor heights), then get_asset_bounds on the prefab, then place with matching scale (often 1 or 100 — check world size, not scale alone).
 - For Godot API / README / class_name docs, use search_project_docs (local ClassDB + project markdown).
 - For design choices (floor height, layout), call ask_user with a clear question instead of guessing or stopping.
 - After fixing scripts, call get_script_errors (or get_runtime_errors while the game runs) to verify; errors are cleared on read so the next check is fresh.
@@ -99,6 +106,8 @@ func list_tool_names() -> Array[String]:
 		"instance_scene",
 		"get_scene_tree",
 		"get_scene_snapshot",
+		"get_scene_spatial_profile",
+		"get_asset_bounds",
 		"get_scene_groups",
 		"get_input_map",
 		"get_runtime_errors",
@@ -140,6 +149,10 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_get_scene_tree(params)
 		"get_scene_snapshot":
 			result = _tool_get_scene_snapshot(params)
+		"get_scene_spatial_profile":
+			result = _tool_get_scene_spatial_profile(params)
+		"get_asset_bounds":
+			result = _tool_get_asset_bounds(params)
 		"get_scene_groups":
 			result = _tool_get_scene_groups(params)
 		"get_input_map":
@@ -278,6 +291,8 @@ func has_empty_tool_call_tags(text: String) -> bool:
 const READ_ONLY_TOOLS: Array[String] = [
 	"get_scene_tree",
 	"get_scene_snapshot",
+	"get_scene_spatial_profile",
+	"get_asset_bounds",
 	"get_scene_groups",
 	"get_input_map",
 	"get_runtime_errors",
@@ -361,6 +376,25 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"ok": true,
 				"scene_path": result.get("scene_path", ""),
 				"node_index": _index_tree_nodes(tree, 50),
+			}
+		"get_scene_spatial_profile":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"scene_path": result.get("scene_path", ""),
+				"floor_y_levels": result.get("floor_y_levels", []),
+				"reference_ground": result.get("reference_ground", {}),
+				"mapping_summary": result.get("mapping_summary", ""),
+			}
+		"get_asset_bounds":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"scene_path": result.get("scene_path", ""),
+				"node_path": result.get("node_path", ""),
+				"local_bounds_size": result.get("local_bounds_size", []),
+				"world_bounds_size": result.get("world_bounds_size", []),
+				"scale_hint": result.get("scale_hint", {}),
 			}
 		"inspect_node":
 			var node: Dictionary = result.get("node", {})
@@ -843,6 +877,108 @@ func _tool_get_scene_snapshot(params: Dictionary = {}) -> Dictionary:
 		"snapshot": _serialize_tree_detailed(root, 0, max_depth)
 	}
 
+func _tool_get_scene_spatial_profile(params: Dictionary = {}) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return {"ok": false, "error": "No scene loaded"}
+	var max_nodes := clampi(int(params.get("max_nodes", 60)), 8, 200)
+	var name_filter: String = String(params.get("name_filter", "")).strip_edges().to_lower()
+	var samples: Array = []
+	_collect_spatial_samples(root, samples, max_nodes, name_filter)
+	if samples.is_empty():
+		return {
+			"ok": true,
+			"scene_path": root.scene_file_path,
+			"samples": [],
+			"mapping_summary": "No measurable 3D objects in the open scene yet.",
+		}
+	var floor_y_levels: Array = _cluster_y_levels(samples)
+	var ground_stats: Dictionary = _aggregate_spatial_stats(samples, "ground")
+	var wall_stats: Dictionary = _aggregate_spatial_stats(samples, "wall")
+	var stair_stats: Dictionary = _aggregate_spatial_stats(samples, "stair")
+	var mapping_summary: String = _build_mapping_summary(floor_y_levels, ground_stats, wall_stats, stair_stats)
+	return {
+		"ok": true,
+		"scene_path": root.scene_file_path,
+		"floor_y_levels": floor_y_levels,
+		"reference_ground": ground_stats,
+		"reference_wall": wall_stats,
+		"reference_stairs": stair_stats,
+		"samples": samples.slice(0, mini(samples.size(), 24)),
+		"sample_count": samples.size(),
+		"mapping_summary": mapping_summary,
+	}
+
+func _tool_get_asset_bounds(params: Dictionary) -> Dictionary:
+	var scene_path := _resolve_res_path(String(params.get("scene_path", "")))
+	var node_path := String(params.get("node_path", "")).strip_edges()
+	var compare_to_scene: bool = bool(params.get("compare_to_scene", true))
+	if not node_path.is_empty():
+		var node := _get_node_by_path(node_path)
+		if node == null:
+			return {"ok": false, "error": "Node not found: %s" % node_path}
+		if not node is Node3D:
+			return {"ok": false, "error": "Node is not Node3D: %s" % node_path}
+		var n3d := node as Node3D
+		var local_aabb := SpatialBoundsUtil.compute_subtree_local_aabb(n3d)
+		var world_aabb := SpatialBoundsUtil.compute_subtree_world_aabb(n3d)
+		if not SpatialBoundsUtil.has_volume(local_aabb) and not SpatialBoundsUtil.has_volume(world_aabb):
+			return {"ok": false, "error": "No mesh/collision bounds found on node: %s" % node_path}
+		var out := {
+			"ok": true,
+			"node_path": _rel_path(n3d),
+			"scale": _vector3_to_array(n3d.scale),
+			"local_bounds_size": _vector3_to_array(local_aabb.size),
+			"local_bounds_center": _vector3_to_array(local_aabb.get_center()),
+			"world_bounds_size": _vector3_to_array(world_aabb.size),
+			"world_bounds_center": _vector3_to_array(world_aabb.get_center()),
+		}
+		if compare_to_scene:
+			out["scale_hint"] = _suggest_scale_for_asset(local_aabb.size)
+		return out
+	if scene_path.is_empty():
+		return {"ok": false, "error": "Provide scene_path or node_path"}
+	if not scene_path.begins_with("res://"):
+		return {"ok": false, "error": "scene_path must start with res://"}
+	if _project_index != null and _project_index.has_method("get_cached_scene_bounds"):
+		var cached: Dictionary = _project_index.get_cached_scene_bounds(scene_path)
+		if not cached.is_empty():
+			var size_arr: Array = cached.get("local_bounds_size", [])
+			var local_size := Vector3(
+				float(size_arr[0]) if size_arr.size() > 0 else 0.0,
+				float(size_arr[1]) if size_arr.size() > 1 else 0.0,
+				float(size_arr[2]) if size_arr.size() > 2 else 0.0
+			)
+			var cached_result := {
+				"ok": true,
+				"scene_path": scene_path,
+				"local_bounds_size": size_arr,
+				"local_bounds_center": cached.get("local_bounds_center", []),
+				"source": "index_cache",
+				"note": "Cached at index sync (local AABB at scale 1,1,1 in meters).",
+			}
+			if compare_to_scene:
+				cached_result["scale_hint"] = _suggest_scale_for_asset(local_size)
+			return cached_result
+	var packed: PackedScene = load(scene_path)
+	if packed == null:
+		return {"ok": false, "error": "Could not load scene: %s" % scene_path}
+	var temp: Node = packed.instantiate()
+	var local_aabb := SpatialBoundsUtil.compute_subtree_local_aabb(temp)
+	temp.free()
+	if not SpatialBoundsUtil.has_volume(local_aabb):
+		return {"ok": false, "error": "No mesh/collision bounds found in scene: %s" % scene_path}
+	var result := {
+		"ok": true,
+		"scene_path": scene_path,
+		"local_bounds_size": _vector3_to_array(local_aabb.size),
+		"local_bounds_center": _vector3_to_array(local_aabb.get_center()),
+		"note": "Sizes are at scale (1,1,1) — local mesh/collision AABB in meters.",
+	}
+	if compare_to_scene:
+		result["scale_hint"] = _suggest_scale_for_asset(local_aabb.size)
+	return result
+
 func _tool_get_scene_groups(params: Dictionary = {}) -> Dictionary:
 	var root := _edited_root()
 	if root == null:
@@ -1150,9 +1286,23 @@ func _tool_instance_scene(params: Dictionary) -> Dictionary:
 			(instance as Node3D).position = Vector3(float(position[0]), float(position[1]), float(position[2]))
 		elif instance is Node2D and position.size() >= 2:
 			(instance as Node2D).position = Vector2(float(position[0]), float(position[1]))
+	var rotation_array: Array = params.get("rotation_degrees", params.get("rotation", []))
+	if instance is Node3D and rotation_array.size() >= 3:
+		(instance as Node3D).rotation_degrees = Vector3(
+			float(rotation_array[0]), float(rotation_array[1]), float(rotation_array[2])
+		)
+	var scale_array: Array = params.get("scale", [])
+	if instance is Node3D and scale_array.size() >= 3:
+		(instance as Node3D).scale = Vector3(float(scale_array[0]), float(scale_array[1]), float(scale_array[2]))
 	
 	_mark_unsaved()
 	var result := {"ok": true, "node_path": _rel_path(instance), "instance_of": scene_path}
+	if instance is Node3D:
+		var world_aabb := SpatialBoundsUtil.compute_subtree_world_aabb(instance as Node3D)
+		if SpatialBoundsUtil.has_volume(world_aabb):
+			result["world_bounds_size"] = _vector3_to_array(world_aabb.size)
+			result["world_bounds_center"] = _vector3_to_array(world_aabb.get_center())
+		result["scale"] = _vector3_to_array((instance as Node3D).scale)
 	if bool(parent_resolved.get("created", false)):
 		result["parent_created"] = _rel_path(parent_node)
 	return result
@@ -1510,6 +1660,7 @@ func _tool_search_project_index(params: Dictionary) -> Dictionary:
 			"item": entry.get("item", entry.get("name", "")),
 			"category": entry.get("category", ""),
 			"preview": entry.get("preview", ""),
+			"local_bounds_size": entry.get("local_bounds_size", []),
 		})
 	return {
 		"ok": true,
@@ -2078,3 +2229,165 @@ func _scene_path_from_scene_builder_item(item_path: String) -> String:
 	if FileAccess.file_exists(scenes_candidate):
 		return scenes_candidate
 	return ""
+
+# --- Spatial mapping / mapeo espacial (AABB world size, not scale) ---
+
+func _spatial_name_category(node_name: String) -> String:
+	var lower := node_name.to_lower()
+	if lower.contains("ground") or lower.contains("floor") or lower.contains("tile"):
+		return "ground"
+	if lower.contains("wall"):
+		return "wall"
+	if lower.contains("stair") or lower.contains("step") or lower.contains("ramp"):
+		return "stair"
+	if lower.contains("door"):
+		return "door"
+	return "other"
+
+func _collect_spatial_samples(node: Node, samples: Array, max_nodes: int, name_filter: String) -> void:
+	if samples.size() >= max_nodes:
+		return
+	if node is Node3D:
+		var n3d := node as Node3D
+		var category := _spatial_name_category(String(node.name))
+		if name_filter.is_empty() or String(node.name).to_lower().contains(name_filter) or category.contains(name_filter):
+			var world_aabb := SpatialBoundsUtil.compute_subtree_world_aabb(n3d)
+			if SpatialBoundsUtil.has_volume(world_aabb):
+				var local_aabb := SpatialBoundsUtil.compute_subtree_local_aabb(n3d)
+				samples.append({
+					"path": _rel_path(n3d),
+					"name": String(node.name),
+					"category": category,
+					"position": _vector3_to_array(n3d.global_position),
+					"scale": _vector3_to_array(n3d.scale),
+					"local_bounds_size": _vector3_to_array(local_aabb.size),
+					"world_bounds_size": _vector3_to_array(world_aabb.size),
+				})
+	for child in node.get_children():
+		_collect_spatial_samples(child, samples, max_nodes, name_filter)
+
+func _cluster_y_levels(samples: Array) -> Array:
+	var y_values: Array = []
+	for sample in samples:
+		if not sample is Dictionary:
+			continue
+		var category: String = String(sample.get("category", ""))
+		if category != "ground" and category != "stair" and category != "door":
+			continue
+		var pos: Array = sample.get("position", [])
+		if pos.size() >= 2:
+			y_values.append(snappedf(float(pos[1]), 0.25))
+	y_values.sort()
+	var levels: Array = []
+	var last_y: float = -99999.0
+	for y in y_values:
+		var yf: float = float(y)
+		if levels.is_empty() or absf(yf - last_y) > 0.35:
+			levels.append(yf)
+			last_y = yf
+	return levels
+
+func _aggregate_spatial_stats(samples: Array, category: String) -> Dictionary:
+	var matched: Array = []
+	for sample in samples:
+		if sample is Dictionary and String(sample.get("category", "")) == category:
+			matched.append(sample)
+	if matched.is_empty():
+		return {"count": 0}
+	var scales_x: Array = []
+	var world_x: Array = []
+	var world_y: Array = []
+	var world_z: Array = []
+	for sample in matched:
+		var scale_arr: Array = sample.get("scale", [])
+		var world_arr: Array = sample.get("world_bounds_size", [])
+		if scale_arr.size() >= 1:
+			scales_x.append(float(scale_arr[0]))
+		if world_arr.size() >= 3:
+			world_x.append(float(world_arr[0]))
+			world_y.append(float(world_arr[1]))
+			world_z.append(float(world_arr[2]))
+	return {
+		"count": matched.size(),
+		"median_scale_x": _median_float(scales_x),
+		"median_world_size": [
+			_median_float(world_x),
+			_median_float(world_y),
+			_median_float(world_z),
+		],
+		"examples": matched.slice(0, 3),
+	}
+
+func _median_float(values: Array) -> float:
+	if values.is_empty():
+		return 0.0
+	var sorted := values.duplicate()
+	sorted.sort()
+	var mid := sorted.size() / 2
+	if sorted.size() % 2 == 1:
+		return float(sorted[mid])
+	return (float(sorted[mid - 1]) + float(sorted[mid])) * 0.5
+
+func _build_mapping_summary(
+	floor_y_levels: Array,
+	ground_stats: Dictionary,
+	wall_stats: Dictionary,
+	stair_stats: Dictionary
+) -> String:
+	var parts: PackedStringArray = []
+	if not floor_y_levels.is_empty():
+		var level_strings: PackedStringArray = []
+		for y in floor_y_levels:
+			level_strings.append(str(y))
+		parts.append("Floor Y levels (m): %s" % ", ".join(level_strings))
+	if int(ground_stats.get("count", 0)) > 0:
+		var gsize: Array = ground_stats.get("median_world_size", [])
+		parts.append(
+			"Reference floor tile world size ~%.2f x %.2f m (median), typical scale.x=%.1f"
+			% [float(gsize[0]) if gsize.size() > 0 else 0.0, float(gsize[2]) if gsize.size() > 2 else 0.0, ground_stats.get("median_scale_x", 1.0)]
+		)
+	if int(wall_stats.get("count", 0)) > 0:
+		var wsize: Array = wall_stats.get("median_world_size", [])
+		parts.append(
+			"Reference wall world height ~%.2f m, typical scale.x=%.1f"
+			% [float(wsize[1]) if wsize.size() > 1 else 0.0, wall_stats.get("median_scale_x", 1.0)]
+		)
+	if int(stair_stats.get("count", 0)) > 0:
+		var ssize: Array = stair_stats.get("median_world_size", [])
+		parts.append(
+			"Existing stairs world size ~%.2f x %.2f x %.2f m"
+			% [
+				float(ssize[0]) if ssize.size() > 0 else 0.0,
+				float(ssize[1]) if ssize.size() > 1 else 0.0,
+				float(ssize[2]) if ssize.size() > 2 else 0.0,
+			]
+		)
+	parts.append(
+		"Before placing a new prefab: get_asset_bounds(scene_path) and scale so world size matches references (scale 1 vs 100 depends on mesh import, not uniform across projects)."
+	)
+	return " | ".join(parts)
+
+func _suggest_scale_for_asset(local_size: Vector3) -> Dictionary:
+	var root := _edited_root()
+	if root == null or local_size.length_squared() <= 0.000001:
+		return {}
+	var profile := _tool_get_scene_spatial_profile({"max_nodes": 80})
+	if not bool(profile.get("ok", false)):
+		return {}
+	var ground_stats: Dictionary = profile.get("reference_ground", {})
+	var ref_size: Array = ground_stats.get("median_world_size", [])
+	if ref_size.size() < 3 or int(ground_stats.get("count", 0)) <= 0:
+		return {"note": "No ground reference in scene — inspect nearby nodes manually."}
+	var ref_x: float = maxf(float(ref_size[0]), 0.01)
+	var ref_z: float = maxf(float(ref_size[2]), 0.01)
+	var asset_x: float = maxf(local_size.x, 0.0001)
+	var asset_z: float = maxf(local_size.z, 0.0001)
+	var uniform: float = maxf(ref_x / asset_x, ref_z / asset_z)
+	var median_scale: float = float(ground_stats.get("median_scale_x", 1.0))
+	return {
+		"suggested_uniform_scale": snappedf(uniform, 0.01),
+		"reference_ground_world_size": ref_size,
+		"asset_local_size_at_scale_1": _vector3_to_array(local_size),
+		"note": "Multiply prefab scale by suggested_uniform_scale so footprint matches existing floor tiles.",
+		"nearby_typical_scale": median_scale,
+	}
