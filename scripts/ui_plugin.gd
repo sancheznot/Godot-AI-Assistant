@@ -86,6 +86,7 @@ var _status_title_base: String = ""
 var _status_summary_base: String = ""
 var _status_wait_start_ms: int = 0
 var _status_indeterminate_bar: bool = true
+var _last_status_anim_step: int = -1
 var _autocomplete_trigger: Dictionary = {}
 var _autocomplete_items: Array = []
 var _autocomplete_buttons: Array = []
@@ -495,7 +496,7 @@ func _style_body_rich_text(label: RichTextLabel) -> void:
 	label.add_theme_font_size_override("normal_font_size", 13)
 	label.add_theme_color_override("default_color", COLOR_BODY_TEXT)
 
-func _append_user_message(text: String, attachments: Array = []) -> void:
+func _append_user_message(text: String, attachments: Array = [], queued: bool = false) -> void:
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.add_theme_stylebox_override(
@@ -510,6 +511,13 @@ func _append_user_message(text: String, attachments: Array = []) -> void:
 	var role_label := Label.new()
 	_style_role_label(role_label, COLOR_USER_ACCENT, _tr("ui.role_you"))
 	vbox.add_child(role_label)
+	if queued:
+		var queued_badge := Label.new()
+		queued_badge.text = _tr("ui.message_queued_badge")
+		queued_badge.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		queued_badge.add_theme_font_size_override("font_size", 11)
+		queued_badge.add_theme_color_override("font_color", Color(0.78, 0.82, 0.95, 1.0))
+		vbox.add_child(queued_badge)
 	
 	if not attachments.is_empty():
 		var attach_row := HBoxContainer.new()
@@ -601,13 +609,13 @@ func _begin_assistant_message() -> void:
 	_active_summary_label.add_theme_color_override("font_color", COLOR_BODY_TEXT)
 	status_vbox.add_child(_active_summary_label)
 	
-	vbox.add_child(_active_status_panel)
-	
 	_active_content_body = VBoxContainer.new()
 	_active_content_body.visible = false
 	_active_content_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_active_content_body.add_theme_constant_override("separation", 8)
 	vbox.add_child(_active_content_body)
+	
+	vbox.add_child(_active_status_panel)
 	
 	messages_container.add_child(_active_assistant_panel)
 	_follow_chat_scroll = true
@@ -631,8 +639,19 @@ func _show_assistant_status(title: String, summary: String, step: int = 0, max_s
 		if step > 0 and max_steps > 0:
 			_active_progress_bar.max_value = float(max_steps)
 			_active_progress_bar.value = float(step)
-			_start_status_animation(title, summary, false)
+			if step != _last_status_anim_step:
+				_last_status_anim_step = step
+				_start_status_animation(title, summary, false)
+			else:
+				_status_summary_base = summary.trim_suffix("…").trim_suffix("...").strip_edges()
+				if _active_summary_label:
+					var elapsed_sec: int = maxi(0, (Time.get_ticks_msec() - _status_wait_start_ms) / 1000)
+					if not _status_summary_base.is_empty():
+						_active_summary_label.text = _tr("ui.waiting_elapsed", [_status_summary_base, elapsed_sec])
+					else:
+						_active_summary_label.text = summary
 		else:
+			_last_status_anim_step = -1
 			_active_progress_bar.max_value = 100.0
 			_active_progress_bar.value = 12.0
 			_start_status_animation(title, summary, true)
@@ -706,6 +725,7 @@ func _finish_assistant_message(text: String, is_error: bool = false) -> void:
 
 func _reset_active_assistant_refs() -> void:
 	_stop_status_animation()
+	_last_status_anim_step = -1
 	_active_assistant_panel = null
 	_active_role_row = null
 	_active_status_panel = null
@@ -719,7 +739,13 @@ func _reset_active_assistant_refs() -> void:
 	_active_status_stylebox = null
 
 func _escape_bbcode(text: String) -> String:
-	return text.replace("[", "[lb]").replace("]", "[rb]")
+	# Models sometimes emit partial BBCode tags — strip before escaping brackets.
+	# A veces el modelo emite tags BBCode a medias — quitarlos antes de escapar corchetes.
+	var cleaned: String = text
+	var tag_regex := RegEx.new()
+	tag_regex.compile("\\[/?(?:font_size|color|b|i|u)(?:=[^\\]]+)?\\]")
+	cleaned = tag_regex.sub(cleaned, "", true)
+	return cleaned.replace("[", "[lb]").replace("]", "[rb]")
 
 func _decode_bbcode_brackets(text: String) -> String:
 	return text.replace("[lb]", "[").replace("[rb]", "]")
@@ -2644,7 +2670,8 @@ func _on_send_button_pressed() -> void:
 	var display_prompt: String = prompt if not prompt.is_empty() else _tr("ui.message_attachments_only")
 	
 	chat_history.add_message("user", api_prompt, false, attachments_copy)
-	_append_user_message(prompt if not prompt.is_empty() else display_prompt, attachments_copy)
+	var will_queue: bool = _request_busy
+	_append_user_message(prompt if not prompt.is_empty() else display_prompt, attachments_copy, will_queue)
 	prompt_text_edit.clear()
 	_hide_autocomplete()
 	var options: Dictionary = _get_query_options()
@@ -2653,11 +2680,13 @@ func _on_send_button_pressed() -> void:
 	options["message_attachments"] = attachments_copy
 	if mention_resolver:
 		var attached: String = mention_resolver.build_attached_context(prompt)
+		var bootstrap_mode: String = String(config_manager.get_setting("bootstrap_context_mode", "minimal")).strip_edges().to_lower()
 		if project_index and bool(config_manager.get_setting("enable_project_index", true)):
 			if project_index.has_method("is_ready") and project_index.is_ready():
-				var index_ctx: String = project_index.build_retrieval_context(prompt)
-				if not index_ctx.is_empty():
-					attached = attached + "\n\n" + index_ctx if not attached.is_empty() else index_ctx
+				if bootstrap_mode != "minimal":
+					var index_ctx: String = project_index.build_retrieval_context(prompt)
+					if not index_ctx.is_empty():
+						attached = attached + "\n\n" + index_ctx if not attached.is_empty() else index_ctx
 		var file_block: String = ComposerAttachments.build_file_context_block(attachments_copy)
 		if not file_block.is_empty():
 			attached = attached if not attached.is_empty() else file_block
@@ -2710,7 +2739,9 @@ func _update_request_ui_state() -> void:
 
 func _update_queue_status() -> void:
 	var queue_size: int = ai_handler.get_queue_size() if ai_handler else 0
-	if queue_size > 0:
+	if queue_size > 0 and _request_busy:
+		status_label.text = _tr("ui.status_busy_and_queued", [queue_size])
+	elif queue_size > 0:
 		status_label.text = _tr("ui.status_queued", [queue_size])
 	elif _request_busy:
 		pass

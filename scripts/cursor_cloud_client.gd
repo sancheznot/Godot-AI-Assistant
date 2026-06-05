@@ -18,6 +18,7 @@ var _pending_action: String = ""
 var _poll_attempts: int = 0
 var _local_cancelled: bool = false
 var _cancel_http: HTTPRequest = null
+var _pending_follow_up: Dictionary = {}
 const MAX_POLL_ATTEMPTS := 120
 
 func setup(owner: Node) -> void:
@@ -60,6 +61,7 @@ func _post_cancel_run(agent_id: String, run_id: String, api_key: String) -> void
 func reset_session() -> void:
 	_agent_id = ""
 	_run_id = ""
+	_pending_follow_up.clear()
 	_stop_polling()
 
 func has_active_run() -> bool:
@@ -69,13 +71,15 @@ func has_active_agent() -> bool:
 	return not _agent_id.is_empty()
 
 func is_busy() -> bool:
+	# Only block while HTTP or poll timer is active — NOT while a session id exists.
+	# Solo bloquear mientras HTTP o el timer de poll están activos — NO por tener sesión.
 	if http_request != null and http_request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
 		return true
 	if _cancel_http != null and _cancel_http.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
 		return true
 	if poll_timer != null and not poll_timer.is_stopped():
 		return true
-	return has_active_run()
+	return false
 
 func create_agent_and_run(api_key: String, model_name: String, prompt_text: String) -> void:
 	if is_busy():
@@ -104,8 +108,9 @@ func follow_up_run(api_key: String, prompt_text: String) -> void:
 		request_failed.emit("Cursor cloud agent session not initialized")
 		return
 	if is_busy():
-		request_failed.emit("Cursor cloud request already in progress")
+		_pending_follow_up = {"api_key": api_key, "prompt_text": prompt_text}
 		return
+	_pending_follow_up.clear()
 	
 	_local_cancelled = false
 	_api_key = api_key.strip_edges()
@@ -115,6 +120,13 @@ func follow_up_run(api_key: String, prompt_text: String) -> void:
 		"prompt": {"text": prompt_text}
 	}
 	_post_json("%s/v1/agents/%s/runs" % [BASE_URL, _agent_id], payload)
+
+func _flush_pending_follow_up() -> void:
+	if _pending_follow_up.is_empty() or is_busy() or _agent_id.is_empty():
+		return
+	var pending: Dictionary = _pending_follow_up.duplicate()
+	_pending_follow_up.clear()
+	follow_up_run(String(pending.get("api_key", "")), String(pending.get("prompt_text", "")))
 
 func _poll_run_status() -> void:
 	if _local_cancelled or _agent_id.is_empty() or _run_id.is_empty():
@@ -182,6 +194,7 @@ func _on_request_completed(result: int, response_code: int, _headers: PackedStri
 			pass
 	
 	_pending_action = ""
+	_flush_pending_follow_up()
 
 func _handle_create_agent_response(parsed: Dictionary) -> void:
 	var agent: Dictionary = parsed.get("agent", {})

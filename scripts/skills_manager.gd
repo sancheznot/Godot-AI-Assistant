@@ -7,26 +7,8 @@ var active_skill_id: String = ""
 
 func load_skills(skills_path: String, active_skill: String = "") -> void:
 	skills.clear()
-	var dir := DirAccess.open(skills_path)
-	if dir == null:
-		push_warning("AI Assistant: skills folder not found at %s" % skills_path)
-		return
-	
-	dir.list_dir_begin()
-	var entry := dir.get_next()
-	while entry != "":
-		if not dir.current_is_dir() and entry.ends_with(".md"):
-			var skill_id := entry.get_basename()
-			var file := FileAccess.open("%s/%s" % [skills_path, entry], FileAccess.READ)
-			if file != null:
-				skills[skill_id] = {
-					"id": skill_id,
-					"name": _humanize_skill_name(skill_id),
-					"content": file.get_as_text()
-				}
-				file.close()
-		entry = dir.get_next()
-	dir.list_dir_end()
+	_load_skills_from_dir(skills_path)
+	_load_skills_from_dir(_local_skills_path(skills_path))
 	
 	if active_skill.is_empty() and not skills.is_empty():
 		active_skill_id = skills.keys()[0]
@@ -90,6 +72,43 @@ func _sanitize_skill_id(raw_id: String) -> String:
 	while "--" in clean:
 		clean = clean.replace("--", "-")
 	return clean.trim_prefix("-").trim_suffix("-")
+
+func _local_skills_path(skills_path: String) -> String:
+	return "%s/local" % skills_path.trim_suffix("/")
+
+func _load_skills_from_dir(dir_path: String) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir() and entry.ends_with(".md"):
+			var skill_id := entry.get_basename()
+			var file := FileAccess.open("%s/%s" % [dir_path, entry], FileAccess.READ)
+			if file != null:
+				skills[skill_id] = {
+					"id": skill_id,
+					"name": _humanize_skill_name(skill_id),
+					"content": file.get_as_text()
+				}
+				file.close()
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+func _list_skill_ids_in_dir(dir_path: String) -> Array:
+	var ids: Array = []
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return ids
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir() and entry.ends_with(".md"):
+			ids.append(entry.get_basename())
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return ids
 
 func _ensure_skills_dir(skills_path: String) -> void:
 	if DirAccess.dir_exists_absolute(skills_path):

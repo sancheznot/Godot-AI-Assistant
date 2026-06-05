@@ -227,9 +227,28 @@ func build_retrieval_context(query: String, max_chars: int = 10000) -> String:
 		used += line.length()
 	return "\n".join(parts)
 
-func build_agent_bootstrap(user_prompt: String) -> String:
+func build_agent_bootstrap(user_prompt: String, mode: String = "minimal") -> String:
 	if not is_ready():
 		return ""
+	if String(mode).strip_edges().to_lower() == "full":
+		return _build_agent_bootstrap_full(user_prompt)
+	return _build_agent_bootstrap_minimal(user_prompt)
+
+func _build_agent_bootstrap_minimal(_user_prompt: String) -> String:
+	var parts: PackedStringArray = [
+		"Project index ready (on demand — do NOT dump or rescan all of res://).",
+		"Fetch context only when needed:",
+		"- search_project_index (hybrid/semantic/lexical) for assets, scenes, scripts",
+		"- get_scene_snapshot / inspect_node / read_script for the open scene",
+		"- search_project_docs for Godot API / README / class_name",
+		"- search_conversation_context when the user refers to earlier chat instructions",
+	]
+	var open_hint: String = _format_scene_snapshot_hint()
+	if not open_hint.is_empty():
+		parts.append(open_hint)
+	return "\n".join(parts)
+
+func _build_agent_bootstrap_full(user_prompt: String) -> String:
 	var lower: String = user_prompt.to_lower()
 	var kinds: Array = []
 	if _prompt_needs_scenebuilder(lower):

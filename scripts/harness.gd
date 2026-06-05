@@ -50,6 +50,8 @@ func build_system_prompt(user_prompt: String, options: Dictionary, agent_mode: b
 		if project_context:
 			layers.append("context")
 			var depth: String = String(options.get("context_depth", config_manager.get_setting("context_depth", "intermediate")))
+			if agent_mode and String(config_manager.get_setting("bootstrap_context_mode", "minimal")) == "minimal":
+				depth = "basic"
 			sections.append(String(project_context.build_context(depth)))
 	
 	if bool(options.get("enable_tools", config_manager.get_setting("enable_editor_tools", true))):
@@ -232,12 +234,14 @@ func _get_agent_instructions() -> String:
 		+ "<tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call> with JSON inside — NEVER empty <tool_call></tool_call> tags.\n"
 		+ "Do NOT narrate plans ('I will explore…', 'Voy a…') without tool calls in the SAME message.\n"
 		+ "SceneBuilder (res://Data/SceneBuilder) is optional — many projects use res://assets/ with .tscn or .glb. "
-		+ "Bootstrap context may already include index + spatial profile — do NOT re-list res:// from scratch.\n"
+		+ "Bootstrap is MINIMAL — fetch context with tools when needed (search_project_index, get_scene_snapshot, read_script, search_conversation_context).\n"
 		+ "Discovery: search_project_index (hybrid local), search_project_docs (Godot API + README), find_project_paths, list_scene_builder_catalog (if present).\n"
 		+ "Spatial mapping: get_scene_spatial_profile (reference sizes, floor Y levels) + get_asset_bounds (local/world AABB) BEFORE placing props.\n"
 		+ "Placement: instance_scene or create_mesh_from_file for any asset folder; place_scene_builder_item only for SceneBuilder .tres items.\n"
 		+ "Design choices: ask_user tool (pauses until user replies).\n"
-		+ "Scripts: create_script in ONE step. Read-only inspect tools do NOT consume edit steps.\n"
+		+ "Scripts: read_script to read, create_script to write/attach (attach_to \".\" = scene root). Read-only inspect tools do NOT consume edit steps.\n"
+		+ "UI/2D scenes: read_script first, then create_script with the SAME path. Prefer set_node_property for theme overrides.\n"
+		+ "Do NOT loop save_scene + get_script_errors. Verify once, then give a final summary in the user's language.\n"
 		+ "Only reply with a final summary AFTER the task is done (max 8 lines, no emoji spam)."
 	)
 

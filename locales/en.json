@@ -70,6 +70,8 @@
 	"ui.stop_tooltip": "Stop request and cancel cloud agent (click ■)",
 	"ui.request_cancelled": "Request cancelled.",
 	"ui.status_queued": "%d message(s) queued",
+	"ui.status_busy_and_queued": "Waiting for response · %d queued",
+	"ui.message_queued_badge": "Queued — sends when the current request finishes (■ cancels all)",
 	"ui.shortcut_hint": "Enter · @ refs · / cmds",
 	"ui.role_you": "You",
 	"ui.role_assistant": "Assistant",

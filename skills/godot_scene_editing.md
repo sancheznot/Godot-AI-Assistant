@@ -28,8 +28,17 @@ Asset discovery:
 - Use `move_node_3d`, `scale_node_3d`, and `rotate_node_3d` to adjust objects.
 - Use `instance_scene` with `scale`, `position`, and `rotation_degrees`.
 
+UI / 2D menu scenes:
+- ALWAYS use `inspect_node` first — check the `script` field (now included in output).
+- Use `read_script` before editing. Then `create_script` with the **same script_path** to update the file.
+- Use `attach_to: "."` for the scene ROOT (Node3D). Child paths like `MainMenu` may hit a Control child, not the root.
+- Prefer `set_node_property` with theme override keys for simple styling.
+- Do NOT create a separate "styler" script on a node that already has game logic.
+
 Avoid:
 - Assuming scale (1,1,1) matches the rest of the level.
 - Using SceneBuilder-only tools when assets live under other folders.
 - Guessing node paths without inspecting the scene first.
 - Large destructive edits without explicit user approval.
+- Attaching a different script file to a node that already has button/signal logic.
+- Looping `save_scene` + `get_script_errors` after changes are verified (0 errors).

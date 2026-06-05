@@ -1,0 +1,28 @@
+---
+description: Git safety — commits only in the Golem-AI plugin repository
+globs:
+alwaysApply: true
+---
+
+# Git repository safety / Seguridad del repositorio git
+
+This workspace is **only** the Godot plugin `Golem-AI` (`addons/ai_assistant_plugin`).
+
+## Before any git command
+
+1. Run git from the plugin root (where `plugin.cfg` exists).
+2. Verify:
+   - `git rev-parse --show-toplevel` ends at `ai_assistant_plugin`
+   - `git remote get-url origin` contains `Godot-AI-Assistant`
+3. If the root is `true-first-person-multiplayer` or another game folder — **STOP**. Wrong repo.
+
+## Never commit from the parent game repo
+
+The parent Godot project has its own git and must ignore this folder (`addons/ai_assistant_plugin/` in parent `.gitignore`).
+
+Do not stage paths like `addons/`, `Maps/`, `Data/`, `project.godot`, or `skills-lock.json` in this plugin repo.
+
+## Commits and pushes
+
+- Commit and push **only** plugin files to `https://github.com/sancheznot/Godot-AI-Assistant.git`
+- After `git init` or clone, run `./install_git_hooks.sh` to enable the pre-commit guard

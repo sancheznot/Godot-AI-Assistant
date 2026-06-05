@@ -49,6 +49,8 @@ var _agent_tools_executed: int = 0
 var _agent_act_nudges: int = 0
 var _agent_model_tool_batches: int = 0
 var _agent_failed_batches: int = 0
+var _agent_empty_tag_streak: int = 0
+var _agent_verify_streak: int = 0
 var _agent_code_only: bool = false
 var _agent_read_only_streak: int = 0
 var _active_user_language: String = "es"
@@ -126,8 +128,8 @@ func cancel_current_request() -> void:
 	_cancel_requested = true
 	_response_retry_count = 999
 	_http_in_flight = false
-	_request_queue.clear()
-	_emit_queue_updated()
+	# Do NOT clear _request_queue — Stop cancels only the active run; queued prompts stay.
+	# NO vaciar _request_queue — Stop solo cancela la petición activa; la cola se conserva.
 	if http_request != null and http_request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
 		http_request.cancel_request()
 	if cursor_cloud != null:
@@ -281,6 +283,8 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_act_nudges = 0
 	_agent_model_tool_batches = 0
 	_agent_failed_batches = 0
+	_agent_empty_tag_streak = 0
+	_agent_verify_streak = 0
 	_agent_code_only = _user_wants_code_only(user_prompt)
 	_agent_read_only_streak = 0
 	_active_user_language = _detect_language(user_prompt)
@@ -292,10 +296,18 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 			+ "Reply with a complete ```gdscript code block using exact node paths from @ mentions / attachments. "
 			+ "At most ONE inspect tool if a path is truly unknown, then answer with code and short steps."
 		)
+	if editor_tools != null and editor_tools.has_method("set_conversation_context"):
+		editor_tools.set_conversation_context(options.get("conversation_messages", []))
 	_agent_messages = _build_conversation_messages(user_prompt, options)
 	var bootstrap_context: String = _bootstrap_agent_context(user_prompt)
 	if not bootstrap_context.is_empty():
-		_agent_log.append("### Bootstrap\nContexto precargado (índice del proyecto + perfil espacial si aplica).")
+		var bootstrap_mode: String = _bootstrap_context_mode()
+		var bootstrap_label: String = (
+			"Contexto mínimo — usa tools (search_project_index, get_scene_snapshot, etc.) según necesites."
+			if bootstrap_mode == "minimal"
+			else "Contexto precargado (índice del proyecto + perfil espacial si aplica)."
+		)
+		_agent_log.append("### Bootstrap\n%s" % bootstrap_label)
 		_agent_messages.append({
 			"role": "user",
 			"content": bootstrap_context + _language_hint_suffix(),
@@ -463,14 +475,36 @@ func _dispatch_request(provider_id: String, provider_cfg: Dictionary, system_pro
 func _send_cursor_cloud_request(provider_cfg: Dictionary, system_prompt: String, messages: Array) -> void:
 	var api_key: String = String(provider_cfg.get("api_key", ""))
 	var model_name: String = String(provider_cfg.get("model", "composer-2.5"))
-	var prompt_text: String = _messages_to_prompt(system_prompt, messages)
 	
 	query_started.emit("cursor")
 	if _agent_active and cursor_cloud.has_active_agent():
-		cursor_cloud.follow_up_run(api_key, prompt_text)
+		# Follow-up: only the delta — Cursor keeps session state; resending the full
+		# system prompt + history burns minutes and cloud tokens per step.
+		# Follow-up: solo el delta — Cursor conserva la sesión; reenviar todo quema minutos y tokens.
+		var delta_text: String = _cursor_agent_follow_up_prompt(messages)
+		cursor_cloud.follow_up_run(api_key, delta_text)
 	else:
+		var prompt_text: String = _messages_to_prompt(system_prompt, messages)
 		cursor_cloud.reset_session()
 		cursor_cloud.create_agent_and_run(api_key, model_name, prompt_text)
+
+func _cursor_agent_follow_up_prompt(messages: Array) -> String:
+	if messages.is_empty():
+		return ""
+	var parts: PackedStringArray = []
+	if messages.size() >= 2:
+		var prev: Dictionary = messages[-2]
+		if String(prev.get("role", "")) == "assistant":
+			var assistant_text: String = String(prev.get("content", "")).strip_edges()
+			if assistant_text.length() > 1800:
+				assistant_text = assistant_text.substr(0, 1800) + "\n...(truncated / truncado)"
+			if not assistant_text.is_empty():
+				parts.append("Your previous step / paso anterior:\n%s" % assistant_text)
+	var last: Dictionary = messages[-1]
+	var role: String = String(last.get("role", "user")).capitalize()
+	var content: String = String(last.get("content", "")).strip_edges()
+	parts.append("%s: %s" % [role, content])
+	return "\n".join(parts)
 
 func _on_cursor_poll_update(status: String, message: String) -> void:
 	if _agent_active:
@@ -894,7 +928,53 @@ func _handle_agent_response(text: String) -> void:
 	if tool_calls_detected and tool_results.is_empty():
 		_agent_log.append("### Tool parse warning (step %d)\nNo se pudieron ejecutar los bloques JSON detectados." % _agent_step)
 	elif empty_tool_tags and tool_results.is_empty():
-		_agent_log.append("### Tool parse warning (step %d)\nDetecté <tool_call></tool_call> vacío — falta JSON dentro del tag." % _agent_step)
+		_agent_empty_tag_streak += 1
+		_agent_log.append("### Tool parse warning (step %d)\nDetecté <tool_call></tool_call> vacío — falta JSON dentro del tag. (racha: %d)" % [_agent_step, _agent_empty_tag_streak])
+		if _agent_empty_tag_streak >= 3:
+			# 3+ empty tags in a row: strip the model's last message to remove the
+			# broken pattern, inject a concrete example, and give one last chance.
+			# 3+ tags vacíos seguidos: limpiar el último mensaje del modelo para quitar
+			# el patrón roto, inyectar un ejemplo concreto y dar una última oportunidad.
+			_agent_messages.append({
+				"role": "user",
+				"content": (
+					"LAST CHANCE: You have sent empty <tool_call></tool_call> %d times. " % _agent_empty_tag_streak
+					+ "The tags are NOT optional formatting — they MUST wrap JSON. "
+					+ "Copy this EXACT pattern, replacing only the values:\n"
+					+ "<tool_call>{\"tool\":\"get_scene_snapshot\",\"params\":{}}</tool_call>\n"
+					+ "<tool_call>{\"tool\":\"inspect_node\",\"params\":{\"node_path\":\"MainMenu\"}}</tool_call>\n"
+					+ "<tool_call>{\"tool\":\"set_node_property\",\"params\":{\"node_path\":\"MainMenu\",\"property\":\"visible\",\"value\":true}}</tool_call>\n"
+					+ "If you truly have nothing to do, write ONLY a plain text summary with NO <tool_call> tags at all."
+					+ _language_hint_suffix()
+				),
+			})
+			_agent_step += 1
+			agent_step_update.emit(_agent_step, _agent_max_steps, "Último intento de tool_call…")
+			_send_agent_request()
+			return
+		if _agent_empty_tag_streak >= 5:
+			_finish_agent_loop(
+				false,
+				_compose_agent_output()
+				+ "\n\n---\nEl modelo generó tool_call vacíos %d veces seguidas y no logró ejecutar herramientas. " % _agent_empty_tag_streak
+				+ "Prueba con otro modelo o reformula la petición."
+			)
+			return
+		if _agent_step < _agent_max_steps:
+			_agent_messages.append({
+				"role": "user",
+				"content": (
+					"ERROR: Your <tool_call></tool_call> tag was EMPTY (attempt %d). " % _agent_empty_tag_streak
+					+ "You MUST put JSON inside the tags on a SINGLE LINE with no line breaks. Example:\n"
+					+ "<tool_call>{\"tool\":\"inspect_node\",\"params\":{\"node_path\":\"MainMenu\"}}</tool_call>\n"
+					+ "Do it NOW — one line, no spaces before/after the JSON."
+					+ _language_hint_suffix()
+				),
+			})
+			_agent_step += 1
+			agent_step_update.emit(_agent_step, _agent_max_steps, "Corrigiendo tool_call vacío (%d)…" % _agent_empty_tag_streak)
+			_send_agent_request()
+			return
 	
 	if not tool_results.is_empty():
 		_agent_model_tool_batches += 1
@@ -921,10 +1001,22 @@ func _handle_agent_response(text: String) -> void:
 		and editor_tools != null
 		and editor_tools.batch_is_read_only_only(tool_results)
 	)
+	var verify_only: bool = (
+		editor_tools != null
+		and editor_tools.batch_is_verify_only(tool_results)
+	)
+	var clean_scripts: bool = (
+		editor_tools != null
+		and editor_tools.batch_has_clean_script_check(tool_results)
+	)
 	if batch_read_only:
 		_agent_read_only_streak += 1
 	elif ok_tool_count > 0:
 		_agent_read_only_streak = 0
+	if verify_only and clean_scripts:
+		_agent_verify_streak += 1
+	elif editor_tools != null and editor_tools.batch_had_mutation(tool_results):
+		_agent_verify_streak = 0
 	
 	# Track batches where every tool call failed (e.g. unknown tools). Stop the loop
 	# after two such batches instead of burning all steps re-trying the same broken plan.
@@ -934,6 +1026,16 @@ func _handle_agent_response(text: String) -> void:
 	if ok_tool_count > 0:
 		_agent_stall_count = 0
 		_agent_failed_batches = 0
+		_agent_empty_tag_streak = 0
+	
+	if _agent_verify_streak >= 2 and _agent_tools_executed > 0:
+		_finish_agent_loop(
+			true,
+			_compose_agent_output()
+			+ "\n\n---\nVerificación completada (0 errores de script). "
+			+ "Prueba el juego en el editor. Si algo sigue fallando, dime el error exacto de la consola."
+		)
+		return
 	elif all_failed:
 		_agent_failed_batches += 1
 	
@@ -952,7 +1054,7 @@ func _handle_agent_response(text: String) -> void:
 		and editor_tools != null
 		and editor_tools.batch_had_mutation(tool_results)
 	)
-	if _content_has_degenerate_repetition(visible_turn) and not had_mutation:
+	if _content_has_degenerate_repetition(visible_turn) and not had_mutation and not empty_tool_tags:
 		_finish_agent_loop(
 			true,
 			_compose_agent_output()
@@ -963,18 +1065,20 @@ func _handle_agent_response(text: String) -> void:
 	# 1) Tools executed -> feed compact results back, continue.
 	# Read-only batches (list/find/inspect) do NOT consume an agent step.
 	# Los lotes solo lectura (list/find/inspect) NO consumen un paso del agente.
-	if not tool_results.is_empty() and (_agent_step < _agent_max_steps or batch_read_only):
+	if not tool_results.is_empty() and (_agent_step < _agent_max_steps or batch_read_only or verify_only):
 		if ok_tool_count > 0 and editor_tools != null and editor_tools.batch_had_mutation(tool_results):
 			if _looks_like_task_complete(visible_turn):
 				_finish_agent_loop(true, _compose_agent_output())
 				return
 		var followup: String = _build_tool_followup(tool_results)
 		_agent_messages.append({"role": "user", "content": followup})
-		if not batch_read_only:
+		if not batch_read_only and not verify_only:
 			_agent_step += 1
 		var summary: String = "Ejecutadas %d tool(s), continuando…" % tool_results.size()
 		if batch_read_only:
 			summary = "Exploración (%d tool(s)) — no consume paso" % tool_results.size()
+		elif verify_only:
+			summary = "Verificación (%d tool(s)) — no consume paso" % tool_results.size()
 		elif _agent_read_only_streak >= 2:
 			summary = "Inspección repetida — actúa o entrega código"
 		agent_step_update.emit(_agent_step, _agent_max_steps, summary)
@@ -990,6 +1094,9 @@ func _handle_agent_response(text: String) -> void:
 	# 2) Sin tools este turno. Si el modelo solo resume/inspecciona pero nunca
 	#    ejecutó la tarea, empujarlo a ACTUAR (nudges limitados).
 	var looks_done: bool = _looks_like_task_complete(_visible_response_text(content, parsed))
+	if looks_done and tool_results.is_empty():
+		_finish_agent_loop(true, _compose_agent_output())
+		return
 	if (looks_done or repeated) and _agent_tools_executed > 0:
 		_finish_agent_loop(true, _compose_agent_output())
 		return
@@ -1063,16 +1170,19 @@ func _build_tool_followup(tool_results: Array) -> String:
 		)
 	elif editor_tools and editor_tools.batch_had_mutation(tool_results):
 		parts.append(
-			"After applying changes, call get_script_errors (or get_runtime_errors if the game is running) to verify. "
-			+ "Use get_input_map if the error mentions a missing InputMap action."
+			"Changes applied. Call get_script_errors ONCE if you have not verified yet. "
+			+ "Then reply with a short FINAL SUMMARY in the user's language — do NOT loop save_scene/get_script_errors."
 		)
-		var snapshot: Dictionary = editor_tools.execute_tool("get_scene_snapshot", {"max_depth": 3})
-		if bool(snapshot.get("ok", false)):
-			parts.append("Updated scene index (compact):")
-			parts.append(editor_tools.compact_tool_results_for_context([{
-				"tool": "get_scene_snapshot",
-				"result": snapshot,
-			}]))
+	elif editor_tools and editor_tools.batch_is_verify_only(tool_results):
+		if editor_tools.batch_has_clean_script_check(tool_results):
+			parts.append(
+				"Script check passed (0 errors). Reply NOW with a short FINAL SUMMARY in the user's language. "
+				+ "Do NOT call save_scene or get_script_errors again unless you changed something."
+			)
+		else:
+			parts.append(
+				"Fix the reported errors with create_script/set_node_property, then verify once."
+			)
 	parts.append(
 		"Continue the task. Prefer ONE action per step. "
 		+ "If the task is complete, reply with ONE short final summary only (max 8 lines, no emoji spam) "
@@ -1151,6 +1261,8 @@ func _reset_agent_state() -> void:
 	_agent_stall_count = 0
 	_agent_last_response_signature = ""
 	_agent_failed_batches = 0
+	_agent_empty_tag_streak = 0
+	_agent_verify_streak = 0
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
 	_agent_model_tool_batches = 0
@@ -1186,24 +1298,42 @@ func _tool_source_text(parsed: Dictionary, content: String, raw_text: String) ->
 		return content
 	return raw_text.strip_edges()
 
+func _bootstrap_context_mode() -> String:
+	if config_manager == null:
+		return "minimal"
+	return String(config_manager.get_setting("bootstrap_context_mode", "minimal")).strip_edges().to_lower()
+
 func _bootstrap_agent_context(user_prompt: String) -> String:
 	if _agent_code_only:
 		return ""
+	var mode: String = _bootstrap_context_mode()
 	var lower: String = user_prompt.to_lower()
 	if project_index != null and project_index.has_method("is_ready"):
 		if bool(config_manager.get_setting("enable_project_index", true)) and project_index.is_ready():
-			var indexed: String = String(project_index.build_agent_bootstrap(user_prompt))
+			var indexed: String = String(project_index.build_agent_bootstrap(user_prompt, mode))
 			if not indexed.is_empty():
 				if _active_user_language == "es":
-					indexed = (
-						"Contexto precargado del índice (NO vuelvas a escanear res:// entero). "
-						+ "Usa search_project_index para assets en cualquier carpeta (SceneBuilder es opcional). "
-						+ "Antes de colocar props 3D: get_scene_spatial_profile + get_asset_bounds para escala correcta.\n"
-						+ indexed
+					if mode == "minimal":
+						indexed = (
+							"Contexto mínimo (índice bajo demanda). "
+							+ "Usa search_project_index, get_scene_snapshot, read_script cuando lo necesites.\n"
+							+ indexed
+						)
+					else:
+						indexed = (
+							"Contexto precargado del índice (NO vuelvas a escanear res:// entero). "
+							+ "Usa search_project_index para assets en cualquier carpeta (SceneBuilder es opcional). "
+							+ "Antes de colocar props 3D: get_scene_spatial_profile + get_asset_bounds para escala correcta.\n"
+							+ indexed
+						)
+				if mode == "full":
+					indexed = _append_spatial_bootstrap(indexed, lower)
+				elif _prompt_needs_spatial_mapping(lower):
+					indexed += (
+						"\n\nSpatial task detected — call get_scene_spatial_profile + get_asset_bounds before placing props."
 					)
-				indexed = _append_spatial_bootstrap(indexed, lower)
 				return indexed
-	if editor_tools == null:
+	if editor_tools == null or mode == "minimal":
 		return ""
 	var keywords: PackedStringArray = [
 		"mapa", "piso", "pisos", "mundo", "scenebuilder", "scene builder", "pared",
@@ -1364,7 +1494,7 @@ func _looks_like_task_complete(text: String) -> bool:
 
 func _language_hint_suffix() -> String:
 	if _active_user_language == "es":
-		return " IMPORTANTE: Responde SIEMPRE en español."
+		return " IMPORTANTE: Responde SIEMPRE en español. No cambies al inglés en el resumen final."
 	return " IMPORTANT: Always reply in the user's language (%s)." % _active_user_language
 
 func _user_wants_code_only(prompt: String) -> bool:

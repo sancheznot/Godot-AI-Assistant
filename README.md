@@ -163,6 +163,31 @@ git clone https://github.com/sancheznot/Godot-AI-Assistant.git addons/ai_assista
 
 Then enable the plugin in Project Settings.
 
+### Git safety (plugin vs game project)
+
+If you develop inside a larger Godot game, keep **two separate git repos**:
+
+| Repo | Folder | Remote |
+|------|--------|--------|
+| **Golem-AI plugin** | `addons/ai_assistant_plugin/` | `Godot-AI-Assistant` |
+| **Your game** | project root | your game remote |
+
+In the **game** `.gitignore`, ignore the plugin folder so nested git does not mix:
+
+```gitignore
+addons/ai_assistant_plugin/
+```
+
+After `git clone` or `git init` in this folder, install the guard hook:
+
+```bash
+cd addons/ai_assistant_plugin
+./install_git_hooks.sh
+./scripts/verify_git_repo.sh
+```
+
+The pre-commit hook blocks commits if `plugin.cfg` is missing, `origin` is wrong, or game paths (`Maps/`, `Data/`, …) are staged.
+
 ## Quick start
 
 1. Click **Config** in the dock toolbar

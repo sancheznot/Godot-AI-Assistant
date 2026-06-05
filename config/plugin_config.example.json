@@ -61,6 +61,7 @@
 		"agent_max_steps": 24,
 		"agent_step_extension": 12,
 		"context_depth": "intermediate",
+		"bootstrap_context_mode": "minimal",
 		"enable_agent_loop": true,
 		"enable_editor_tools": true,
 		"enable_thinking": true,

@@ -241,6 +241,8 @@ func _migrate_legacy_config() -> void:
 		settings["include_project_context"] = true
 	if not settings.has("context_depth"):
 		settings["context_depth"] = "intermediate"
+	if not settings.has("bootstrap_context_mode"):
+		settings["bootstrap_context_mode"] = "minimal"
 	if not settings.has("enable_editor_tools"):
 		settings["enable_editor_tools"] = true
 	if not settings.has("enable_agent_loop"):

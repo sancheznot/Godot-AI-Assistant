@@ -1,0 +1,56 @@
+#!/bin/sh
+# Pre-commit guard — only allow commits in the Golem-AI plugin repo
+# Protección pre-commit — solo commits en el repo del plugin Golem-AI
+
+set -e
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	echo "pre-commit: no se pudo resolver la raíz del repositorio."
+	exit 1
+}
+
+if [ ! -f "$ROOT/plugin.cfg" ]; then
+	echo ""
+	echo "BLOQUEADO: la raíz de git no parece el plugin Golem-AI."
+	echo "  Raíz detectada: $ROOT"
+	echo "  Falta plugin.cfg en esa carpeta."
+	echo ""
+	echo "Probablemente estás en el repo del JUEGO, no en addons/ai_assistant_plugin/."
+	echo "  cd addons/ai_assistant_plugin"
+	echo "  git status"
+	exit 1
+fi
+
+REMOTE=$(git remote get-url origin 2>/dev/null || true)
+case "$REMOTE" in
+	*Godot-AI-Assistant*)
+		;;
+	"")
+		echo ""
+		echo "AVISO: sin remote 'origin'. Commit local permitido (plugin.cfg OK)."
+		echo "  Cuando subas a GitHub, usa: https://github.com/sancheznot/Godot-AI-Assistant.git"
+		;;
+	*)
+		echo ""
+		echo "BLOQUEADO: remote 'origin' no es Godot-AI-Assistant."
+		echo "  origin = $REMOTE"
+		echo "  Esperado: *Godot-AI-Assistant*"
+		exit 1
+		;;
+esac
+
+# Block paths that belong to the parent game project, not this plugin repo
+# Bloquear rutas del juego padre que no deben entrar en este repo
+STAGED=$(git diff --cached --name-only)
+for path in $STAGED; do
+	case "$path" in
+		addons/*|Maps/*|Data/*|mis_assets/*|project.godot|skills-lock.json)
+			echo ""
+			echo "BLOQUEADO: archivo del repo del JUEGO en staging: $path"
+			echo "  Este repo solo debe contener el plugin (plugin.cfg en la raíz)."
+			exit 1
+			;;
+	esac
+done
+
+exit 0

@@ -17,6 +17,7 @@ const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spa
 
 var _editor_plugin: EditorPlugin = null
 var _project_index: RefCounted = null
+var _conversation_messages: Array = []
 
 func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null) -> void:
 	_editor_plugin = editor_plugin
@@ -24,6 +25,9 @@ func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null) -> voi
 
 func set_project_index(project_index: RefCounted) -> void:
 	_project_index = project_index
+
+func set_conversation_context(messages: Array) -> void:
+	_conversation_messages = messages.duplicate(true)
 
 func get_tools_prompt() -> String:
 	return """## Editor tools
@@ -43,13 +47,15 @@ Inspection (use ONE tool max, prefer @ mentions / attached context first):
 - get_asset_bounds: params {"scene_path":"res://assets/stairs.tscn"} OR {"node_path":"Floor_1/Ground_05"} — local/world AABB size in meters (NOT scale); use before placing props
 - get_scene_groups: params {} or {"group":"players"} to list nodes in one group
 - get_input_map: params {} for project actions only, or {"action":"action_interact"} for one action
-- get_runtime_errors: params {"max_count":20,"clear_after":true} — runtime debugger errors (play mode)
-- get_script_errors: params {"script_path":"res://DoorScript.gd","clear_after":true} — GDScript parse errors + debugger errors
+- get_runtime_errors: params {"max_count":20,"clear_after":false} — runtime debugger errors (requires F5 play mode first)
+- get_script_errors: params {"script_path":"res://DoorScript.gd","clear_after":false} — GDScript parse errors + debugger buffer
+- read_script: params {"script_path":"res://MainMenu/MainMenu.gd","max_chars":12000} — read .gd file content (use before editing)
 - get_selection: params {}
 - inspect_node: params {"node_path":"Root/Child"} (includes node groups)
 - list_project_files: params {"path":"res://Data/SceneBuilder","extension":".tscn","limit":50}
 - find_project_paths: params {"query":"Wall","path":"res://Data/SceneBuilder","extensions":[".tscn",".tres"],"limit":80}
 - search_project_index: params {"query":"Wall Floor_2","kinds":["scenebuilder","scene","file"],"limit":24,"mode":"hybrid"} — hybrid lexical+semantic local search (modes: hybrid, semantic, lexical)
+- search_conversation_context: params {"query":"settings UI bottom left","limit":5} — search prior chat messages when the user refers to something said earlier
 - search_project_docs: params {"query":"CharacterBody3D move_and_slide","limit":12,"mode":"hybrid"} — project README/markdown + Godot ClassDB + global class_name docs (all local)
 - resolve_project_path: params {"path":"res://data/SceneBuilder"} — fixes @ prefix and Linux case (Data vs data)
 - list_scene_builder_catalog: params {"path":"res://Data/SceneBuilder"} — categories + sample asset paths
@@ -77,7 +83,10 @@ Node editing:
 
 Scripting (create AND attach a script in ONE call):
 - create_script: params {"script_path":"res://scripts/Door.gd","attach_to":"Floor_1_exit/Door_02-n1","content":"extends Node3D\\n\\nfunc _ready():\\n\\tprint(\\"ready\\")\\n"}
-  IMPORTANT: put the FULL script code in the "content" param (escape newlines as \\n). Do NOT put code in a separate markdown block. This single call writes the file and attaches it to attach_to (optional). The script is saved automatically — there is no create_script/open_script/save_script split.
+  IMPORTANT: put the FULL script code in the "content" param (escape newlines as \\n). Do NOT put code in a separate markdown block. This single call writes the file and attaches it to attach_to (optional). The script is saved automatically.
+- read_script: params {"script_path":"res://DoorScript.gd"} — returns file content; call BEFORE editing an existing script.
+  attach_to paths: use "." for the scene ROOT node; use exact paths like "MainMenu/MenuPanel" for children. "MainMenu" alone may hit a child Control, not the root Node3D.
+  create_script REFUSES attaching a DIFFERENT script file to a node that already has one — use read_script + create_script with the SAME script_path to edit it.
 
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
@@ -90,11 +99,14 @@ Rules:
 - After fixing scripts, call get_script_errors (or get_runtime_errors while the game runs) to verify; errors are cleared on read so the next check is fresh.
 - Use res:// paths only. NEVER prefix paths with "@" (write res://... not @res://...).
 - node_path / parent_node_path / attach_to are RELATIVE to the edited scene root (e.g. "Floor_1_exit/Ground_05"). Use "" for the root itself.
-- There is NO open_script / save_script / create_node tool. To make a script use create_script (it saves and attaches in one step).
+- There is NO save_script / create_node tool. Use read_script to read, create_script to write/attach, open_script to open in the editor.
 - To actually perform the task, EXECUTE the editing tools. Do not stop after only inspecting and do not repeat the same plan.
 - Match the script's `extends` to the target node type (inspect_node if unsure).
 - Inspect the scene only when you truly need info, then act immediately (create_script, set_node_property, etc.).
 - If the user asks for code to paste themselves ("dame el código", "yo lo hago"), reply with a ```gdscript block and do NOT call create_script.
+- Before editing a script: read_script first, then create_script with the SAME script_path. Do NOT attach a different script file to a node that already has logic (breaks signals/buttons).
+- For UI/menu styling: edit the EXISTING script (read_script → create_script same path) or use set_node_property for theme overrides. Do NOT create a separate "styler" script on the same node.
+- Do NOT repeat save_scene + get_script_errors in a loop. Verify once after edits, then reply with a final summary.
 - Use exact node paths from @ mentions and attached context (e.g. Door_02-n1, Floor_1_exit/Door_02-n1).
 - Prefer small, safe edits."""
 
@@ -124,6 +136,7 @@ func list_tool_names() -> Array[String]:
 		"create_box_mesh",
 		"find_project_paths",
 		"search_project_index",
+		"search_conversation_context",
 		"search_project_docs",
 		"resolve_project_path",
 		"list_scene_builder_catalog",
@@ -136,6 +149,7 @@ func list_tool_names() -> Array[String]:
 		"inspect_node",
 		"create_script",
 		"open_script",
+		"read_script",
 		"save_script",
 	]
 
@@ -197,6 +211,8 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_find_project_paths(params)
 		"search_project_index":
 			result = _tool_search_project_index(params)
+		"search_conversation_context":
+			result = _tool_search_conversation_context(params)
 		"search_project_docs":
 			result = _tool_search_project_docs(params)
 		"resolve_project_path":
@@ -215,6 +231,8 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_create_script(params)
 		"open_script":
 			result = _tool_open_script(params)
+		"read_script":
+			result = _tool_read_script(params)
 		"save_script":
 			result = {"ok": true, "status": "scripts are saved automatically by create_script"}
 		_:
@@ -286,7 +304,13 @@ func has_tool_calls(text: String) -> bool:
 func has_empty_tool_call_tags(text: String) -> bool:
 	var tag_regex := RegEx.new()
 	tag_regex.compile("(?is)<tool_call>\\s*</tool_call>")
-	return tag_regex.search(text) != null
+	if tag_regex.search(text) == null:
+		return false
+	# Only "empty" if we also failed to extract any valid tool JSON
+	# (the tag might contain multiline JSON that the parser now handles).
+	# Solo "vacío" si tampoco pudimos extraer JSON válido
+	# (el tag podría tener JSON multilínea que el parser ahora maneja).
+	return extract_tool_call_json_strings(text).is_empty()
 
 const READ_ONLY_TOOLS: Array[String] = [
 	"get_scene_tree",
@@ -302,9 +326,11 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"list_project_files",
 	"find_project_paths",
 	"search_project_index",
+	"search_conversation_context",
 	"search_project_docs",
 	"resolve_project_path",
 	"list_scene_builder_catalog",
+	"read_script",
 	"ask_user",
 	"get_tilemap_cells",
 ]
@@ -324,7 +350,12 @@ const MUTATING_TOOLS: Array[String] = [
 	"create_mesh_from_file",
 	"set_tilemap_cell",
 	"create_scene",
+]
+
+const VERIFY_ONLY_TOOLS: Array[String] = [
 	"save_scene",
+	"get_script_errors",
+	"get_runtime_errors",
 ]
 
 func is_read_only_tool(tool_name: String) -> bool:
@@ -350,8 +381,35 @@ func batch_had_mutation(tool_results: Array) -> bool:
 		if not entry is Dictionary:
 			continue
 		var tool_name: String = String(entry.get("tool", ""))
+		if tool_name in VERIFY_ONLY_TOOLS:
+			continue
 		if is_mutating_tool(tool_name) and bool(entry.get("result", {}).get("ok", false)):
 			return true
+	return false
+
+func batch_is_verify_only(tool_results: Array) -> bool:
+	if tool_results.is_empty():
+		return false
+	for entry in tool_results:
+		if not entry is Dictionary:
+			return false
+		if not bool(entry.get("result", {}).get("ok", false)):
+			return false
+		var tool_name: String = String(entry.get("tool", ""))
+		if tool_name not in VERIFY_ONLY_TOOLS:
+			return false
+	return true
+
+func batch_has_clean_script_check(tool_results: Array) -> bool:
+	for entry in tool_results:
+		if not entry is Dictionary:
+			continue
+		if String(entry.get("tool", "")) != "get_script_errors":
+			continue
+		var result: Dictionary = entry.get("result", {})
+		if not bool(result.get("ok", false)):
+			return false
+		return int(result.get("count", 1)) == 0
 	return false
 
 func compact_tool_results_for_context(tool_results: Array) -> String:
@@ -408,12 +466,26 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"type": node.get("type", ""),
 				"properties": slim_props,
 			}
+			if node.has("script"):
+				slim_node["script"] = node.get("script", "")
+			if node.has("script_missing"):
+				slim_node["script_missing"] = true
 			if node.has("groups"):
 				slim_node["groups"] = node.get("groups", [])
 			return {
 				"tool": tool_name,
 				"ok": true,
 				"node": slim_node,
+			}
+		"read_script":
+			var content: String = String(result.get("content", ""))
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"script_path": result.get("script_path", ""),
+				"lines": result.get("lines", 0),
+				"truncated": bool(result.get("truncated", false)),
+				"content": content if content.length() <= 4000 else content.substr(0, 4000) + "\n... (truncated)",
 			}
 		"get_scene_groups":
 			if result.has("group"):
@@ -467,7 +539,7 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"errors": result.get("errors", []),
 				"cleared": bool(result.get("cleared", false)),
 			}
-		"list_project_files", "find_project_paths", "search_project_index", "search_project_docs", "list_scene_builder_catalog", "resolve_project_path":
+		"list_project_files", "find_project_paths", "search_project_index", "search_conversation_context", "search_project_docs", "list_scene_builder_catalog", "resolve_project_path":
 			var files: Array = result.get("files", result.get("matches", result.get("categories", [])))
 			var slim_result: Dictionary = {
 				"tool": tool_name,
@@ -526,11 +598,11 @@ func _walk_tree_index(node: Dictionary, out: Array, limit: int) -> void:
 func format_tool_results_for_display(text: String) -> String:
 	var trimmed: String = text.strip_edges()
 	if trimmed.begins_with("["):
-		var parsed: Variant = JSON.parse_string(trimmed)
+		var parsed: Variant = _try_parse_json(trimmed)
 		if parsed is Array:
 			return summarize_tool_results_for_display(parsed)
 	if trimmed.begins_with("{"):
-		var parsed_obj: Variant = JSON.parse_string(trimmed)
+		var parsed_obj: Variant = _try_parse_json(trimmed)
 		if parsed_obj is Dictionary:
 			return summarize_tool_results_for_display([parsed_obj])
 	if trimmed.length() > 5000:
@@ -657,7 +729,9 @@ func extract_tool_call_json_strings(text: String) -> Array[String]:
 	var found: Array[String] = []
 	var seen: Dictionary = {}
 	var tag_regex := RegEx.new()
-	tag_regex.compile("<tool_call>(.*?)</tool_call>")
+	# (?s) makes . match newlines so multiline JSON inside tags is captured
+	# (?s) hace que . coincida con saltos de línea para capturar JSON multilínea
+	tag_regex.compile("(?s)<tool_call>(.*?)</tool_call>")
 	for match_result in tag_regex.search_all(text):
 		_collect_tool_json_candidate(match_result.get_string(1), found, seen)
 	var fence_regex := RegEx.new()
@@ -715,7 +789,7 @@ func find_tool_result_json_spans(text: String) -> Array:
 	return spans
 
 func looks_like_tool_results_json(block: String) -> bool:
-	var parsed: Variant = JSON.parse_string(block.strip_edges())
+	var parsed: Variant = _try_parse_json(block.strip_edges())
 	if not parsed is Array or parsed.is_empty():
 		return false
 	for item in parsed:
@@ -792,7 +866,7 @@ func _collect_tool_json_candidate(raw: String, found: Array[String], seen: Dicti
 
 func _parse_tool_json(raw_json: String) -> Variant:
 	var cleaned: String = raw_json.strip_edges()
-	var parsed: Variant = JSON.parse_string(cleaned)
+	var parsed: Variant = _try_parse_json(cleaned)
 	if parsed != null:
 		return parsed
 	var repaired: String = cleaned
@@ -800,8 +874,16 @@ func _parse_tool_json(raw_json: String) -> Variant:
 	repaired = repaired.replace("\"params:{\"", "\"params\": {}")
 	repaired = repaired.replace("\"params:{", "\"params\": {")
 	if repaired != cleaned:
-		return JSON.parse_string(repaired)
+		return _try_parse_json(repaired)
 	return null
+
+func _try_parse_json(text: String) -> Variant:
+	if text.is_empty():
+		return null
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return null
+	return json.get_data()
 
 func _editor_interface() -> EditorInterface:
 	if _editor_plugin:
@@ -1103,21 +1185,28 @@ func _summarize_input_event(event: InputEvent) -> String:
 
 func _tool_get_runtime_errors(params: Dictionary = {}) -> Dictionary:
 	var max_count: int = clampi(int(params.get("max_count", 20)), 1, 50)
-	var clear_after: bool = bool(params.get("clear_after", true))
+	var clear_after: bool = bool(params.get("clear_after", false))
 	var bridge: EditorDebuggerPlugin = _debugger_error_bridge()
 	var errors: Array = []
 	if bridge != null and bridge.has_method("fetch_errors"):
 		errors = bridge.fetch_errors(clear_after, max_count)
+	var hint: String = ""
+	if errors.is_empty():
+		hint = (
+			"No runtime errors captured. Run the game (F5) to reproduce, then call this tool again. "
+			+ "Parse-only checks use get_script_errors; runtime node errors appear here after play."
+		)
 	return {
 		"ok": true,
 		"count": errors.size(),
 		"errors": errors,
 		"cleared": clear_after,
+		"hint": hint,
 	}
 
 func _tool_get_script_errors(params: Dictionary = {}) -> Dictionary:
 	var script_path: String = String(params.get("script_path", "")).strip_edges()
-	var clear_after: bool = bool(params.get("clear_after", true))
+	var clear_after: bool = bool(params.get("clear_after", false))
 	var max_count: int = clampi(int(params.get("max_count", 20)), 1, 50)
 	var errors: Array = []
 	if script_path.is_empty():
@@ -1138,11 +1227,19 @@ func _tool_get_script_errors(params: Dictionary = {}) -> Dictionary:
 		if item is Dictionary:
 			errors.append(item)
 	errors = errors.slice(0, max_count)
+	var hint: String = ""
+	if errors.is_empty():
+		hint = (
+			"No errors found. Note: get_script_errors checks parse errors + debugger buffer. "
+			+ "Runtime errors (Node not found, etc.) require running the game (F5) first, "
+			+ "then call get_runtime_errors or pass script_path explicitly."
+		)
 	return {
 		"ok": true,
 		"count": errors.size(),
 		"errors": errors,
 		"cleared": clear_after,
+		"hint": hint,
 	}
 
 func _get_open_script_paths() -> PackedStringArray:
@@ -1671,6 +1768,60 @@ func _tool_search_project_index(params: Dictionary) -> Dictionary:
 		"count": matches.size(),
 	}
 
+func _tool_search_conversation_context(params: Dictionary) -> Dictionary:
+	var query := String(params.get("query", "")).strip_edges()
+	if query.is_empty():
+		return {"ok": false, "error": "query is required (e.g. settings UI, bottom left menu)"}
+	var limit := clampi(int(params.get("limit", 5)), 1, 20)
+	if _conversation_messages.is_empty():
+		return {
+			"ok": true,
+			"query": query,
+			"matches": [],
+			"count": 0,
+			"hint": "No conversation history loaded for this request.",
+		}
+	var terms: PackedStringArray = PackedStringArray()
+	for raw_term in query.split(" ", false):
+		var term: String = raw_term.strip_edges().to_lower()
+		if term.length() >= 2:
+			terms.append(term)
+	var lower_q: String = query.to_lower()
+	var scored: Array = []
+	for item in _conversation_messages:
+		if not item is Dictionary:
+			continue
+		var content: String = String(item.get("content", "")).strip_edges()
+		if content.is_empty():
+			continue
+		var lower_c: String = content.to_lower()
+		var score: float = 0.0
+		if lower_q.length() >= 3 and lower_c.contains(lower_q):
+			score += 4.0
+		for term in terms:
+			if lower_c.contains(term):
+				score += 1.0
+		if score <= 0.0:
+			continue
+		var excerpt: String = content
+		if excerpt.length() > 900:
+			excerpt = excerpt.substr(0, 900) + "\n...(truncated)"
+		scored.append({
+			"role": String(item.get("role", "")),
+			"score": score,
+			"excerpt": excerpt,
+		})
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("score", 0.0)) > float(b.get("score", 0.0))
+	)
+	var matches: Array = scored.slice(0, limit)
+	return {
+		"ok": true,
+		"query": query,
+		"matches": matches,
+		"count": matches.size(),
+	}
+
 func _tool_search_project_docs(params: Dictionary) -> Dictionary:
 	if _project_index == null or not _project_index.has_method("is_ready") or not _project_index.is_ready():
 		return {
@@ -1905,6 +2056,33 @@ func _tool_create_script(params: Dictionary) -> Dictionary:
 				base_type = target.get_class()
 		content = "extends %s\n\nfunc _ready() -> void:\n\tpass\n" % base_type
 	
+	if not attach_to.is_empty():
+		var target := _get_node_by_path(attach_to)
+		if target and target.get_script() != null:
+			var existing_path: String = ""
+			if target.get_script() is Script:
+				existing_path = (target.get_script() as Script).resource_path
+			var broken_ref: bool = (
+				not existing_path.is_empty()
+				and not FileAccess.file_exists(existing_path)
+			)
+			if (
+				not existing_path.is_empty()
+				and existing_path != script_path
+				and not broken_ref
+				and not bool(params.get("replace_script", false))
+			):
+				return {
+					"ok": false,
+					"error": (
+						"Node '%s' already has script '%s'. "
+						+ "Use read_script + create_script with the SAME script_path to edit it, "
+						+ "or attach_to '.' if you meant the scene root (not a child named MainMenu)."
+					) % [attach_to, existing_path],
+					"existing_script": existing_path,
+					"hint": "Call read_script first, then create_script with the same script_path.",
+				}
+	
 	var dir_path := script_path.get_base_dir()
 	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(dir_path)):
 		var make_dir := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
@@ -1955,6 +2133,29 @@ func _tool_open_script(params: Dictionary) -> Dictionary:
 			ei.edit_script(script_res)
 	return {"ok": true, "opened": script_path}
 
+func _tool_read_script(params: Dictionary) -> Dictionary:
+	var script_path := String(params.get("script_path", params.get("file_path", "")))
+	if script_path.is_empty() or not script_path.ends_with(".gd"):
+		return {"ok": false, "error": "script_path must be res://.../*.gd"}
+	if not FileAccess.file_exists(script_path):
+		return {"ok": false, "error": "Script does not exist: %s" % script_path}
+	var file := FileAccess.open(script_path, FileAccess.READ)
+	if file == null:
+		return {"ok": false, "error": "Could not read script: %s" % script_path}
+	var content: String = file.get_as_text()
+	file.close()
+	var max_chars: int = clampi(int(params.get("max_chars", 12000)), 500, 32000)
+	var truncated: bool = content.length() > max_chars
+	if truncated:
+		content = content.substr(0, max_chars)
+	return {
+		"ok": true,
+		"script_path": script_path,
+		"content": content,
+		"lines": content.split("\n").size(),
+		"truncated": truncated,
+	}
+
 func _serialize_tile_cell(node: Node, coords: Vector2i) -> Dictionary:
 	if node is TileMapLayer:
 		var layer := node as TileMapLayer
@@ -2002,6 +2203,12 @@ func _serialize_node_summary(node: Node, include_properties: bool = false) -> Di
 	var node_groups: PackedStringArray = node.get_groups()
 	if not node_groups.is_empty():
 		data["groups"] = Array(node_groups)
+	if node.get_script() != null and node.get_script() is Script:
+		var script_path: String = (node.get_script() as Script).resource_path
+		if not script_path.is_empty():
+			data["script"] = script_path
+			if not FileAccess.file_exists(script_path):
+				data["script_missing"] = true
 	if include_properties:
 		var props: Dictionary = {}
 		for prop_info in node.get_property_list():
@@ -2012,6 +2219,8 @@ func _serialize_node_summary(node: Node, include_properties: bool = false) -> Di
 				continue
 			var value = node.get(prop_name)
 			if value is Object:
+				if prop_name == "script" and node.get_script() is Script:
+					props[prop_name] = (node.get_script() as Script).resource_path
 				continue
 			props[prop_name] = value
 		data["properties"] = props
@@ -2033,9 +2242,12 @@ func _serialize_tree_detailed(node: Node, depth: int, max_depth: int) -> Diction
 
 func _get_node_by_path(node_path: String) -> Node:
 	var root := _edited_root()
-	if root == null or node_path.is_empty():
+	if root == null:
 		return null
-	return root.get_node_or_null(NodePath(node_path))
+	var trimmed := node_path.strip_edges()
+	if trimmed.is_empty() or trimmed == ".":
+		return root
+	return root.get_node_or_null(NodePath(trimmed))
 
 func _serialize_tree(node: Node, depth: int, max_depth: int) -> Dictionary:
 	var data := {

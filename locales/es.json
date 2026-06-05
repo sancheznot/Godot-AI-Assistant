@@ -70,6 +70,8 @@
 	"ui.stop_tooltip": "Detener petición y cancelar agente cloud (clic en ■)",
 	"ui.request_cancelled": "Petición cancelada.",
 	"ui.status_queued": "%d mensaje(s) en cola",
+	"ui.status_busy_and_queued": "Esperando respuesta · %d en cola",
+	"ui.message_queued_badge": "En cola — se enviará cuando termine la petición actual (■ cancela todo)",
 	"ui.shortcut_hint": "Enter · @ refs · / cmds",
 	"ui.role_you": "Tú",
 	"ui.role_assistant": "Asistente",

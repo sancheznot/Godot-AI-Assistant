@@ -42,7 +42,8 @@ func fetch_errors(clear_after: bool = true, max_count: int = 25) -> Array:
 	var output: Array = merged.slice(0, maxi(max_count, 1))
 	if clear_after:
 		_entries.clear()
-		_try_clear_debugger_panel()
+		# Do NOT click Clear in the debugger UI — agent may need to re-read errors.
+		# NO pulsar Clear en la UI del debugger — el agente puede necesitar releer errores.
 	return output
 
 func _parse_error_payload(data: Array) -> Dictionary:
@@ -109,20 +110,48 @@ func _scrape_debugger_error_tree(max_count: int) -> Array:
 		var tree_root: TreeItem = tree.get_root()
 		if tree_root == null:
 			continue
-		var item: TreeItem = tree_root.get_first_child()
-		while item != null and errors.size() < max_count:
-			var summary: String = String(item.get_text(1))
-			if summary.is_empty():
-				summary = String(item.get_text(0))
-			if summary.is_empty():
-				item = item.get_next()
-				continue
-			errors.append({
-				"summary": summary,
-				"source": "debugger_ui",
-			})
-			item = item.get_next()
+		# Walk all items recursively — Godot 4.x error tree depth varies.
+		# Recorrer todos los items — la profundidad del árbol de errores varía en Godot 4.x.
+		_scrape_tree_items_recursive(tree_root, errors, max_count)
 	return errors
+
+func _scrape_tree_items_recursive(item: TreeItem, errors: Array, max_count: int) -> void:
+	if item == null or errors.size() >= max_count:
+		return
+	var summary: String = ""
+	for col in range(maxi(item.get_column_count(), 1)):
+		var cell: String = String(item.get_text(col)).strip_edges()
+		if cell.is_empty():
+			continue
+		if summary.is_empty():
+			summary = cell
+		elif not summary.contains(cell):
+			summary = "%s | %s" % [summary, cell]
+	if not summary.is_empty() and _looks_like_error_line(summary):
+		errors.append({
+			"summary": summary,
+			"source": "debugger_ui",
+		})
+	var child: TreeItem = item.get_first_child()
+	while child != null and errors.size() < max_count:
+		_scrape_tree_items_recursive(child, errors, max_count)
+		child = child.get_next()
+
+func _looks_like_error_line(text: String) -> bool:
+	var lower: String = text.to_lower()
+	if lower in ["errors", "errores", "warnings", "advertencias", "stack trace", "stack frames"]:
+		return false
+	var markers: PackedStringArray = [
+		"error:", "warning:", "node not found", "invalid", "failed", "parse error",
+		"script error", "cannot", "expected", "null instance",
+	]
+	for marker in markers:
+		if lower.contains(marker):
+			return true
+	# Lines with file:line pattern / Líneas con patrón archivo:línea
+	if text.contains(".gd:") or text.contains("res://"):
+		return true
+	return false
 
 func _try_clear_debugger_panel() -> void:
 	var debugger: Node = _get_script_editor_debugger()
