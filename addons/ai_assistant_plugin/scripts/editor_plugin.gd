@@ -45,7 +45,7 @@ func _enter_tree() -> void:
 	plugin_control.custom_minimum_size = Vector2.ZERO
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, plugin_control)
 	project_index.start_auto_sync()
-	print("AI Assistant Plugin added to editor")
+	print("Golem-AI plugin added to editor")
 
 func _exit_tree() -> void:
 	if debugger_error_bridge:
@@ -55,7 +55,7 @@ func _exit_tree() -> void:
 		remove_control_from_docks(plugin_control)
 		plugin_control.queue_free()
 		plugin_control = null
-	print("AI Assistant Plugin removed from editor")
+	print("Golem-AI plugin removed from editor")
 
 func get_debugger_error_bridge() -> EditorDebuggerPlugin:
 	return debugger_error_bridge

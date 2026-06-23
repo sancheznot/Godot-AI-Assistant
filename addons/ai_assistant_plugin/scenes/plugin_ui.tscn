@@ -2,7 +2,7 @@
 
 [ext_resource type="Script" path="res://addons/ai_assistant_plugin/scripts/ui_plugin.gd" id="1"]
 
-[node name="AIAssistantPluginUI" type="Control"]
+[node name="Golem-AI" type="Control"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
