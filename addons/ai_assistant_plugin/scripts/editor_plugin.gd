@@ -22,7 +22,7 @@ func _enter_tree() -> void:
 	project_index.setup(self, config_manager)
 	project_index.connect_filesystem_watch(self)
 	editor_tools = preload("res://addons/ai_assistant_plugin/scripts/editor_tools.gd").new()
-	editor_tools.setup(self, project_index)
+	editor_tools.setup(self, project_index, config_manager)
 	debugger_error_bridge = preload("res://addons/ai_assistant_plugin/scripts/debugger_error_bridge.gd").new()
 	debugger_error_bridge.setup(self)
 	add_debugger_plugin(debugger_error_bridge)

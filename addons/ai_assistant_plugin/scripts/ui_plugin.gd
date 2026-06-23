@@ -144,7 +144,7 @@ func _ready() -> void:
 		project_context.setup(editor_plugin)
 	if editor_tools == null and editor_plugin:
 		editor_tools = preload("res://addons/ai_assistant_plugin/scripts/editor_tools.gd").new()
-		editor_tools.setup(editor_plugin, project_index)
+		editor_tools.setup(editor_plugin, project_index, config_manager)
 	if project_index == null and editor_plugin:
 		project_index = preload("res://addons/ai_assistant_plugin/scripts/project_index_service.gd").new()
 		project_index.setup(editor_plugin, config_manager)

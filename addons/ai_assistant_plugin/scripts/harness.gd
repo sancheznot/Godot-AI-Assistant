@@ -243,6 +243,7 @@ func _get_agent_instructions() -> String:
 		+ "Spatial mapping: get_scene_spatial_profile + get_asset_bounds BEFORE placing props.\n"
 		+ "Placement: instance_scene or create_mesh_from_file for any asset folder; place_scene_builder_item only for SceneBuilder .tres items.\n"
 		+ "Scripts: read_script to read, create_script to write/attach (attach_to \".\" = scene root).\n"
+		+ "Internet assets: web_search (mode web|images) to find URLs, then download_file into res://.\n"
 		+ "UI/2D scenes: read_script first, then create_script with the SAME path.\n"
 		+ "Do NOT loop save_scene + get_script_errors. Verify once, then give a final summary in the user's language.\n"
 		+ "Only reply with a final summary AFTER the task is done (max 8 lines, no emoji spam)."

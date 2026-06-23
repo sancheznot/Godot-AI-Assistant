@@ -2,6 +2,7 @@
 scripts/_parse_check.gd
 managed_context/
 test_suite_analysis/
+.cursor/
 
 # Personal cheatsheets (not for repo)
 assetlib_submit.txt

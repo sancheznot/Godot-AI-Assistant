@@ -312,6 +312,12 @@ func _migrate_legacy_config() -> void:
 		settings["docs_md_chunk_size"] = 1400
 	if not settings.has("ui_language"):
 		settings["ui_language"] = "auto"
+	if not settings.has("enable_web_search"):
+		settings["enable_web_search"] = true
+	if not settings.has("web_search_provider"):
+		settings["web_search_provider"] = "serper"
+	if not settings.has("web_search_max_results"):
+		settings["web_search_max_results"] = 8
 
 func _migrate_api_keys_to_secrets() -> void:
 	if secrets_manager == null or not config.has("ai_models"):
@@ -458,3 +464,25 @@ func set_active_model_selection(provider_id: String, model_id: String) -> void:
 
 func get_provider_label(provider_id: String) -> String:
 	return String(PROVIDER_LABELS.get(provider_id, provider_id))
+
+const WEB_SEARCH_PROVIDERS := ["serper", "brave"]
+
+func get_web_search_api_key(provider_id: String) -> String:
+	if secrets_manager == null:
+		return ""
+	return String(secrets_manager.get_api_key(provider_id)).strip_edges()
+
+func set_web_search_api_key(provider_id: String, api_key: String) -> void:
+	if secrets_manager == null:
+		return
+	secrets_manager.set_api_key(provider_id, api_key)
+
+func is_web_search_api_key_from_env(provider_id: String) -> bool:
+	if secrets_manager == null:
+		return false
+	return secrets_manager.is_api_key_from_env(provider_id)
+
+func get_web_search_api_key_env_var(provider_id: String) -> String:
+	if secrets_manager == null:
+		return "GOLEM_AI_API_KEY_%s" % provider_id.to_upper()
+	return secrets_manager.get_env_var_name(provider_id)

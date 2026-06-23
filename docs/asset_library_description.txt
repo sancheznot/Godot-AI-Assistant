@@ -1,0 +1,33 @@
+Golem-AI — AI editor assistant for Godot 4. Chat with local or cloud models from a dock panel, run a multi-step agent with editor tools, search the web, download assets into your project, and interact with other plugins.
+
+FEATURES
+• Chat composer: bubble UI, thinking blocks, tool results, attachments (text + images), Vision/Think toggles
+• Providers: Ollama, LM Studio, OpenRouter, Kimi, MiniMax, OpenAI, Anthropic, Gemini, Cursor
+• Agent loop: scene edits, scripts, nodes, TileMap, spatial mapping, compact tool results
+• Web search: Serper (serper.dev) or Brave Search API — find textures, docs, asset URLs (Config → Settings)
+• Download files: HTTPS → res:// (textures, .glb, audio) via download_file tool
+• Other plugins: list_plugins, inspect_plugin, call_node_method (Terrain3D, DialogueManager, etc.)
+• Project context: open scene, selection, @file mentions, hybrid index + Godot docs search
+• Skills: Markdown skills (/skill, @skill:id)
+• Cursor-style UX: @ autocomplete, / commands, searchable agent history (pin, archive, Ctrl+N)
+• Bilingual UI: English / Spanish
+
+INSTALL
+Search "Golem-AI" in the Asset Library → install → enable in Project → Project Settings → Plugins.
+Opens as dock tab "Golem-AI". Configure a provider in Config, refresh models (↻), enable Tools/Agent as needed.
+
+REQUIRES
+Godot 4.2+ (tested on 4.6.x). At least one AI provider (e.g. Ollama or LM Studio for local use).
+Optional: Serper or Brave API key for web_search (free tier available at serper.dev).
+
+MIT License · sancheznotdev
+https://github.com/sancheznot/Godot-AI-Assistant
+
+---
+ESPAÑOL (resumen tienda)
+
+Golem-AI — asistente de IA en el editor de Godot 4. Chat con modelos locales o en la nube, agente multi-paso con tools del editor, búsqueda web (Serper/Brave), descarga de assets a res://, y soporte para otros plugins.
+
+Instalar desde Asset Library → activar en Ajustes → Plugins → Configurar proveedor en Config.
+
+Godot 4.2+ · MIT · sancheznotdev

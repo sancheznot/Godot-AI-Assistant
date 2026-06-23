@@ -292,6 +292,41 @@ func _make_settings_section() -> PanelContainer:
 	_style_spin_box(agent_steps)
 	grid.add_child(agent_steps)
 	
+	grid.add_child(_make_field_label(_tr("config.web_search")))
+	var web_search_hint := Label.new()
+	web_search_hint.text = _tr("config.web_search_hint")
+	web_search_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	web_search_hint.add_theme_font_size_override("font_size", 11)
+	web_search_hint.add_theme_color_override("font_color", COLOR_MUTED)
+	grid.add_child(web_search_hint)
+	grid.add_child(_make_field_label(_tr("config.enable_web_search")))
+	var enable_web_search := CheckBox.new()
+	enable_web_search.name = "EnableWebSearch"
+	enable_web_search.button_pressed = bool(config_manager.get_setting("enable_web_search", true))
+	enable_web_search.text = _tr("config.enable_web_search_hint")
+	_style_checkbox(enable_web_search)
+	grid.add_child(enable_web_search)
+	grid.add_child(_make_field_label(_tr("config.web_search_provider")))
+	var web_provider := OptionButton.new()
+	web_provider.name = "WebSearchProvider"
+	web_provider.add_item("Serper (serper.dev)")
+	web_provider.set_item_metadata(web_provider.item_count - 1, "serper")
+	web_provider.add_item("Brave Search")
+	web_provider.set_item_metadata(web_provider.item_count - 1, "brave")
+	var current_web_provider: String = String(config_manager.get_setting("web_search_provider", "serper"))
+	for i in web_provider.item_count:
+		if String(web_provider.get_item_metadata(i)) == current_web_provider:
+			web_provider.select(i)
+			break
+	_style_option_button(web_provider)
+	grid.add_child(web_provider)
+	grid.add_child(_make_field_label(_tr("config.serper_api_key")))
+	var serper_key := _make_web_search_key_edit("serper", "SerperApiKey")
+	grid.add_child(serper_key)
+	grid.add_child(_make_field_label(_tr("config.brave_api_key")))
+	var brave_key := _make_web_search_key_edit("brave", "BraveApiKey")
+	grid.add_child(brave_key)
+	
 	provider_sections["_settings"] = grid
 	return panel
 
@@ -826,6 +861,22 @@ func _on_skill_download_failed(skill_id: String, error_message: String) -> void:
 	if _skills_status_label:
 		_skills_status_label.text = _tr("config.skills_download_failed", [skill_id, error_message])
 
+func _make_web_search_key_edit(provider_id: String, node_name: String) -> LineEdit:
+	var api_key := LineEdit.new()
+	api_key.name = node_name
+	var from_env: bool = config_manager.is_web_search_api_key_from_env(provider_id)
+	if from_env:
+		api_key.text = "••••••••"
+		api_key.editable = false
+		api_key.placeholder_text = config_manager.get_web_search_api_key_env_var(provider_id)
+	else:
+		api_key.text = config_manager.get_web_search_api_key(provider_id)
+		api_key.placeholder_text = _tr("config.api_key_placeholder")
+	api_key.secret = not from_env
+	api_key.custom_minimum_size = Vector2(260, 28)
+	_style_line_edit(api_key)
+	return api_key
+
 func _make_provider_section(provider_id: String) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL_INNER, 8))
@@ -1131,6 +1182,18 @@ func _on_save_pressed() -> void:
 		config_manager.set_setting("enable_thinking", settings_grid.get_node("EnableThinking").button_pressed)
 		config_manager.set_setting("enable_agent_loop", settings_grid.get_node("EnableAgentLoop").button_pressed)
 		config_manager.set_setting("agent_max_steps", int(settings_grid.get_node("AgentMaxSteps").value))
+		if settings_grid.has_node("EnableWebSearch"):
+			config_manager.set_setting("enable_web_search", settings_grid.get_node("EnableWebSearch").button_pressed)
+		var web_provider_node := settings_grid.get_node_or_null("WebSearchProvider") as OptionButton
+		if web_provider_node:
+			config_manager.set_setting(
+				"web_search_provider",
+				String(web_provider_node.get_item_metadata(web_provider_node.selected))
+			)
+		if settings_grid.has_node("SerperApiKey") and not config_manager.is_web_search_api_key_from_env("serper"):
+			config_manager.set_web_search_api_key("serper", settings_grid.get_node("SerperApiKey").text)
+		if settings_grid.has_node("BraveApiKey") and not config_manager.is_web_search_api_key_from_env("brave"):
+			config_manager.set_web_search_api_key("brave", settings_grid.get_node("BraveApiKey").text)
 	
 	if _index_section_grid:
 		config_manager.set_setting(

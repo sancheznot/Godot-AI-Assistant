@@ -45,9 +45,9 @@
   <img src="icon.png" alt="Golem-AI logo" width="180">
 </p>
 
-**AI-powered editor assistant for Godot 4** — chat with local or cloud models, edit scenes, run editor tools, attach files and images, and manage agent sessions from the dock.
+**AI-powered editor assistant for Godot 4** — chat with local or cloud models, run a multi-step agent with editor tools, search the web, download assets, interact with other plugins, and manage sessions from the dock.
 
-Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License
+Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.1**
 
 ---
 
@@ -118,11 +118,16 @@ Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax
 
 ### Agent & tools
 
-- **Editor tools** — optional tool-calling loop in the Godot editor
-- **Agent loop** — multi-step verify & fix with compact tool results (faster, less redundant inspection)
-- **External plugin support** — `list_plugins`, `inspect_plugin`, and `call_node_method` let the agent discover and interact with **any** installed plugin (Terrain3D, DialogueManager, etc.)
+- **Editor tools** — optional tool-calling loop in the Godot editor (scenes, scripts, nodes, TileMap, spatial mapping)
+- **Agent loop** — multi-step verify & fix with compact tool results and smarter step efficiency
+- **Minimal bootstrap** — lightweight first prompt; fetch project context on demand via tools
+- **Internet & assets**
+  - **`web_search`** — search the web via **Serper** ([serper.dev](https://serper.dev)) or **Brave Search API** (`mode`: `web` or `images` for textures)
+  - **`download_file`** — download HTTPS files (textures, `.glb`, audio) straight into `res://`
+  - Typical flow: `web_search` → pick a URL → `download_file` → place in scene
+- **External plugin support** — `list_plugins`, `inspect_plugin`, and `call_node_method` work with **any** installed plugin (Terrain3D, DialogueManager, etc.)
 - **Skills system** — Markdown skills (`/skill`, dropdown, `@skill:id`)
-- **Project context** — open scene, selection, `@file` mentions, configurable depth
+- **Project context** — open scene, selection, `@file` mentions, hybrid project index + docs search
 
 ### Session history
 
@@ -220,6 +225,7 @@ Settings (endpoints, models, toggles) are stored in `config/plugin_config.json`.
 | **Encrypted file** | `user://ai_assistant_plugin/secrets.enc` | Default. Keys from the Config UI are saved here via Godot's encrypted file API. |
 | **Passphrase** | `GOLEM_AI_SECRETS_PASSPHRASE` | Optional. Custom passphrase for `secrets.enc`. Default: machine id (per device). |
 | **Environment** | `GOLEM_AI_API_KEY_<PROVIDER>` | Optional override per provider, e.g. `GOLEM_AI_API_KEY_OPENAI`, `GOLEM_AI_API_KEY_MINIMAX`. Takes priority over the encrypted store. |
+| **Web search** | `GOLEM_AI_API_KEY_SERPER`, `GOLEM_AI_API_KEY_BRAVE` | Optional keys for the `web_search` tool (Config → Settings). |
 
 On first launch after updating, keys still present in an old `plugin_config.json` are **migrated automatically** to `secrets.enc` and removed from the JSON.
 
@@ -230,6 +236,7 @@ Key options in `plugin_config.json`:
 - **Providers** — endpoints, API keys, default models
 - **Context depth** — `basic` / `intermediate` / `full`
 - **Agent loop** — multi-step verify & fix with editor tools
+- **Web search** — Serper or Brave API (`enable_web_search`, provider + API key in Config → Settings)
 - **enable_vision** / **enable_thinking** — persisted preferences (respect model capabilities)
 - **Skills path** — folder with `.md` skill files
 - **UI language** — `auto`, `en`, `es`
@@ -243,10 +250,11 @@ Godot-AI-Assistant/             # repo root (for GitHub / Asset Library)
 ├── README.md
 ├── LICENSE
 ├── icon.png
-├── docs/                       # AssetLib previews
+├── docs/                       # AssetLib previews + store copy
 │   ├── preview_dock.jpg
 │   ├── preview_autocomplete.jpg
-│   └── preview_models.jpg
+│   ├── preview_models.jpg
+│   └── asset_library_description.txt
 └── addons/
     └── ai_assistant_plugin/    # the plugin (installs here in your project)
         ├── plugin.cfg
@@ -286,15 +294,15 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 
 **Autor:** [sancheznotdev](https://github.com/sancheznot) · Licencia MIT
 
-### Novedades recientes
+### Novedades recientes (v1.4.x)
 
+- **Búsqueda web**: tool `web_search` con API de **Serper** o **Brave** (modo `web` o `images` para texturas)
+- **Descarga de assets**: tool `download_file` — URLs HTTPS → `res://` (texturas, modelos, audio)
+- **Plugins externos**: `list_plugins`, `inspect_plugin`, `call_node_method` para cualquier addon (Terrain3D, etc.)
+- **Agente más eficiente**: bootstrap mínimo, menos steps desperdiciados, respuestas informacionales en 1 paso
 - **Adjuntos**: archivos de texto e imágenes en el compositor (📎 / 🖼)
-- **Visión y Think**: toggles inteligentes según capacidades del modelo (Gemma, Qwen 3.6, Composer, LM Studio, etc.)
-- **Proveedores**: OpenRouter, Kimi, MiniMax (visión solo en **MiniMax-M3**)
-- **Historial**: selección múltiple, archivar/restaurar/eliminar en lote, confirmación al borrar
-- **UI**: bloques colapsables (thinking, tools, código) con botón copiar; modelos agrupados por proveedor
-- **Agente**: respuestas más rápidas, menos inspección redundante, resultados de tools compactos
-- **Plugins externos**: el agente puede descubrir y usar cualquier plugin instalado (Terrain3D, DialogueManager, etc.) via `list_plugins`, `inspect_plugin` y `call_node_method`
+- **Proveedores**: Ollama, LM Studio, OpenRouter, Kimi, MiniMax, OpenAI, Anthropic, Gemini, Cursor
+- **Historial**: selección múltiple, archivar/restaurar/eliminar en lote, `@` autocomplete, UI EN/ES
 
 Instalación: copia la carpeta a `addons/ai_assistant_plugin`, activa el plugin en Ajustes del proyecto y configura un proveedor desde **Config** en el dock.
 

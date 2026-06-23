@@ -52,7 +52,7 @@
 		"author": "sancheznotdev",
 		"description": "Asistente AI integrado en el editor de Godot",
 		"name": "Golem-AI",
-		"version": "1.4.0"
+		"version": "1.4.1"
 	},
 	"settings": {
 		"active_skill": "godot_scene_editing",
@@ -94,6 +94,9 @@
 		"ollama_max_num_ctx": 32768,
 		"skills_path": "res://addons/ai_assistant_plugin/skills",
 		"temperature": 0.7,
-		"ui_language": "auto"
+		"ui_language": "auto",
+		"enable_web_search": true,
+		"web_search_provider": "serper",
+		"web_search_max_results": 8
 	}
 }

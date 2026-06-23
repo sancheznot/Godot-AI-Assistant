@@ -14,14 +14,22 @@ const ALLOWED_NODE_TYPES := [
 ]
 
 const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spatial_bounds_util.gd")
+const WebSearchService := preload("res://addons/ai_assistant_plugin/scripts/web_search_service.gd")
 
 var _editor_plugin: EditorPlugin = null
 var _project_index: RefCounted = null
+var _config_manager: RefCounted = null
+var _web_search: RefCounted = null
 var _conversation_messages: Array = []
 
-func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null) -> void:
+func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null, config_manager: RefCounted = null) -> void:
 	_editor_plugin = editor_plugin
 	_project_index = project_index
+	_config_manager = config_manager
+	if _web_search == null:
+		_web_search = WebSearchService.new()
+	if config_manager != null:
+		_web_search.setup(editor_plugin, config_manager)
 
 func set_project_index(project_index: RefCounted) -> void:
 	_project_index = project_index
@@ -93,6 +101,10 @@ External plugin interaction:
 - inspect_plugin: params {"node_path":"Terrain3D"} OR {"class_name":"Terrain3D"} — lists public methods, properties and signals of any node or class (works for ANY plugin)
 - call_node_method: params {"node_path":"Terrain3D","method":"set_brush_size","args":[5.0]} — calls any method on any node in the scene tree; use inspect_plugin first to discover available methods
 
+Internet / assets:
+- web_search: params {"query":"free grass texture png","mode":"web"} — search the web (Serper or Brave, configured in Settings). mode: web | images (use images for textures/assets).
+- download_file: params {"url":"https://example.com/grass.png","save_path":"res://assets/textures/grass.png"} — download a file from HTTPS into the project (textures, .glb, audio). Use web_search first to find URLs, then download_file.
+
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
@@ -159,6 +171,8 @@ func list_tool_names() -> Array[String]:
 		"list_plugins",
 		"inspect_plugin",
 		"call_node_method",
+		"download_file",
+		"web_search",
 	]
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
@@ -249,6 +263,10 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_inspect_plugin(params)
 		"call_node_method":
 			result = _tool_call_node_method(params)
+		"download_file":
+			result = _tool_download_file(params)
+		"web_search":
+			result = _tool_web_search(params)
 		_:
 			result = {"ok": false, "error": "Unknown tool: %s" % tool_name}
 	
@@ -349,6 +367,7 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"get_tilemap_cells",
 	"list_plugins",
 	"inspect_plugin",
+	"web_search",
 ]
 
 const MUTATING_TOOLS: Array[String] = [
@@ -367,6 +386,7 @@ const MUTATING_TOOLS: Array[String] = [
 	"set_tilemap_cell",
 	"create_scene",
 	"call_node_method",
+	"download_file",
 ]
 
 const VERIFY_ONLY_TOOLS: Array[String] = [
@@ -575,6 +595,23 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 			elif result.has("categories"):
 				slim_result["categories"] = result.get("categories", [])
 			return slim_result
+		"web_search":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"provider": result.get("provider", ""),
+				"mode": result.get("mode", ""),
+				"query": result.get("query", ""),
+				"results": (result.get("results", []) as Array).slice(0, 8),
+			}
+		"download_file":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"save_path": result.get("save_path", ""),
+				"bytes": result.get("bytes", 0),
+				"url": result.get("url", ""),
+			}
 		"ask_user":
 			return {
 				"tool": tool_name,
@@ -2805,3 +2842,79 @@ func _tool_call_node_method(params: Dictionary) -> Dictionary:
 		else:
 			output["return"] = result
 	return output
+
+func _tool_web_search(params: Dictionary) -> Dictionary:
+	if _web_search == null or _config_manager == null:
+		return {"ok": false, "error": "Web search not configured"}
+	var query: String = String(params.get("query", "")).strip_edges()
+	var mode: String = String(params.get("mode", "web")).strip_edges().to_lower()
+	var limit: int = int(params.get("limit", 0))
+	return _web_search.search(query, mode, limit)
+
+const MAX_DOWNLOAD_BYTES := 25 * 1024 * 1024
+const HTTP_DOWNLOAD_TIMEOUT_MS := 120000
+
+# ponytail: HTTPS download into res:// — no search API, model must supply the URL
+func _tool_download_file(params: Dictionary) -> Dictionary:
+	var url: String = String(params.get("url", "")).strip_edges()
+	var save_path: String = String(params.get("save_path", "")).strip_edges()
+	if url.is_empty() or save_path.is_empty():
+		return {"ok": false, "error": "url and save_path (res://...) are required"}
+	if not save_path.begins_with("res://"):
+		return {"ok": false, "error": "save_path must start with res://"}
+	var url_check: Dictionary = _validate_download_url(url)
+	if not bool(url_check.get("ok", false)):
+		return url_check
+	var dir_path: String = save_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(dir_path)):
+		var make_dir := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+		if make_dir != OK:
+			return {"ok": false, "error": "Could not create folder: %s" % dir_path}
+	if _editor_plugin == null:
+		return {"ok": false, "error": "Editor plugin not initialized"}
+	var http := HTTPRequest.new()
+	_editor_plugin.add_child(http)
+	var response: Dictionary = {}
+	var completed := false
+	http.request_completed.connect(func(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray):
+		response = {"result": result, "code": response_code, "body": body}
+		completed = true
+	)
+	var err := http.request(url)
+	if err != OK:
+		http.queue_free()
+		return {"ok": false, "error": "HTTP request failed to start: %d" % err}
+	var elapsed := 0
+	while not completed and elapsed < HTTP_DOWNLOAD_TIMEOUT_MS:
+		OS.delay_msec(10)
+		elapsed += 10
+	http.queue_free()
+	if not completed:
+		return {"ok": false, "error": "Download timed out after %d ms" % HTTP_DOWNLOAD_TIMEOUT_MS}
+	if int(response.get("result", -1)) != HTTPRequest.RESULT_SUCCESS:
+		return {"ok": false, "error": "HTTP error result: %d" % int(response.get("result", -1))}
+	var code: int = int(response.get("code", 0))
+	if code < 200 or code >= 300:
+		return {"ok": false, "error": "HTTP status %d" % code}
+	var body: PackedByteArray = response.get("body", PackedByteArray())
+	if body.size() > MAX_DOWNLOAD_BYTES:
+		return {"ok": false, "error": "File too large (%d bytes, max %d)" % [body.size(), MAX_DOWNLOAD_BYTES]}
+	if body.is_empty():
+		return {"ok": false, "error": "Empty response body"}
+	var file := FileAccess.open(save_path, FileAccess.WRITE)
+	if file == null:
+		return {"ok": false, "error": "Could not write: %s" % save_path}
+	file.store_buffer(body)
+	file.close()
+	var ei := _editor_interface()
+	if ei:
+		ei.get_resource_filesystem().scan()
+	return {"ok": true, "url": url, "save_path": save_path, "bytes": body.size()}
+
+func _validate_download_url(url: String) -> Dictionary:
+	var lower: String = url.to_lower()
+	if not lower.begins_with("https://"):
+		return {"ok": false, "error": "Only https:// URLs are allowed"}
+	if "localhost" in lower or "127.0.0.1" in lower or "192.168." in lower or "10.0." in lower:
+		return {"ok": false, "error": "Local/private URLs are blocked"}
+	return {"ok": true}
