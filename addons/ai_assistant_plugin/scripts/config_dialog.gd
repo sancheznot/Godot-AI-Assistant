@@ -326,6 +326,77 @@ func _make_settings_section() -> PanelContainer:
 	grid.add_child(_make_field_label(_tr("config.brave_api_key")))
 	var brave_key := _make_web_search_key_edit("brave", "BraveApiKey")
 	grid.add_child(brave_key)
+
+	grid.add_child(_make_field_label(_tr("config.obsidian")))
+	var obsidian_hint := Label.new()
+	obsidian_hint.text = _tr("config.obsidian_hint")
+	obsidian_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	obsidian_hint.add_theme_font_size_override("font_size", 11)
+	obsidian_hint.add_theme_color_override("font_color", COLOR_MUTED)
+	grid.add_child(obsidian_hint)
+	var obsidian_links := HBoxContainer.new()
+	obsidian_links.add_theme_constant_override("separation", 12)
+	obsidian_links.add_child(_make_external_link_button(
+		_tr("config.obsidian_link_plugin"),
+		"https://obsidian.md/plugins?id=obsidian-local-rest-api"
+	))
+	obsidian_links.add_child(_make_external_link_button(
+		_tr("config.obsidian_link_github"),
+		"https://github.com/coddingtonbear/obsidian-local-rest-api"
+	))
+	grid.add_child(obsidian_links)
+	grid.add_child(_make_field_label(_tr("config.enable_obsidian")))
+	var enable_obsidian := CheckBox.new()
+	enable_obsidian.name = "EnableObsidian"
+	enable_obsidian.button_pressed = bool(config_manager.get_setting("enable_obsidian", false))
+	enable_obsidian.text = _tr("config.enable_obsidian_hint")
+	_style_checkbox(enable_obsidian)
+	grid.add_child(enable_obsidian)
+	grid.add_child(_make_field_label(_tr("config.obsidian_backend")))
+	var obsidian_backend := OptionButton.new()
+	obsidian_backend.name = "ObsidianBackend"
+	obsidian_backend.add_item(_tr("config.obsidian_backend_folder"))
+	obsidian_backend.set_item_metadata(obsidian_backend.item_count - 1, "folder")
+	obsidian_backend.add_item(_tr("config.obsidian_backend_rest"))
+	obsidian_backend.set_item_metadata(obsidian_backend.item_count - 1, "rest")
+	var current_obsidian_backend: String = String(config_manager.get_setting("obsidian_backend", "folder"))
+	for i in obsidian_backend.item_count:
+		if String(obsidian_backend.get_item_metadata(i)) == current_obsidian_backend:
+			obsidian_backend.select(i)
+			break
+	_style_option_button(obsidian_backend)
+	grid.add_child(obsidian_backend)
+	grid.add_child(_make_field_label(_tr("config.obsidian_vault_path")))
+	var obsidian_vault_path := LineEdit.new()
+	obsidian_vault_path.name = "ObsidianVaultPath"
+	obsidian_vault_path.text = String(config_manager.get_setting("obsidian_vault_path", ""))
+	obsidian_vault_path.placeholder_text = _tr("config.obsidian_vault_path_placeholder")
+	obsidian_vault_path.custom_minimum_size = Vector2(320, 28)
+	_style_line_edit(obsidian_vault_path)
+	grid.add_child(obsidian_vault_path)
+	var obsidian_folder_hint := Label.new()
+	obsidian_folder_hint.text = _tr("config.obsidian_folder_hint")
+	obsidian_folder_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	obsidian_folder_hint.add_theme_font_size_override("font_size", 11)
+	obsidian_folder_hint.add_theme_color_override("font_color", COLOR_MUTED)
+	grid.add_child(obsidian_folder_hint)
+	grid.add_child(_make_field_label(_tr("config.obsidian_rest_url")))
+	var obsidian_rest_url := LineEdit.new()
+	obsidian_rest_url.name = "ObsidianRestUrl"
+	obsidian_rest_url.text = String(config_manager.get_setting("obsidian_rest_url", "https://127.0.0.1:27124"))
+	obsidian_rest_url.placeholder_text = "https://127.0.0.1:27124"
+	obsidian_rest_url.custom_minimum_size = Vector2(320, 28)
+	_style_line_edit(obsidian_rest_url)
+	grid.add_child(obsidian_rest_url)
+	var obsidian_rest_hint := Label.new()
+	obsidian_rest_hint.text = _tr("config.obsidian_rest_hint")
+	obsidian_rest_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	obsidian_rest_hint.add_theme_font_size_override("font_size", 11)
+	obsidian_rest_hint.add_theme_color_override("font_color", COLOR_MUTED)
+	grid.add_child(obsidian_rest_hint)
+	grid.add_child(_make_field_label(_tr("config.obsidian_rest_api_key")))
+	var obsidian_rest_key := _make_obsidian_key_edit()
+	grid.add_child(obsidian_rest_key)
 	
 	provider_sections["_settings"] = grid
 	return panel
@@ -861,6 +932,30 @@ func _on_skill_download_failed(skill_id: String, error_message: String) -> void:
 	if _skills_status_label:
 		_skills_status_label.text = _tr("config.skills_download_failed", [skill_id, error_message])
 
+func _make_external_link_button(label_text: String, url: String) -> LinkButton:
+	var button := LinkButton.new()
+	button.text = label_text
+	button.uri = url
+	button.add_theme_color_override("font_color", COLOR_PRIMARY)
+	button.add_theme_color_override("font_hover_color", COLOR_PRIMARY_HOVER)
+	return button
+
+func _make_obsidian_key_edit() -> LineEdit:
+	var api_key := LineEdit.new()
+	api_key.name = "ObsidianRestApiKey"
+	var from_env: bool = config_manager.is_obsidian_rest_api_key_from_env()
+	if from_env:
+		api_key.text = "••••••••"
+		api_key.editable = false
+		api_key.placeholder_text = config_manager.get_obsidian_rest_api_key_env_var()
+	else:
+		api_key.text = config_manager.get_obsidian_rest_api_key()
+		api_key.placeholder_text = _tr("config.api_key_placeholder")
+	api_key.secret = not from_env
+	api_key.custom_minimum_size = Vector2(320, 28)
+	_style_line_edit(api_key)
+	return api_key
+
 func _make_web_search_key_edit(provider_id: String, node_name: String) -> LineEdit:
 	var api_key := LineEdit.new()
 	api_key.name = node_name
@@ -1194,6 +1289,26 @@ func _on_save_pressed() -> void:
 			config_manager.set_web_search_api_key("serper", settings_grid.get_node("SerperApiKey").text)
 		if settings_grid.has_node("BraveApiKey") and not config_manager.is_web_search_api_key_from_env("brave"):
 			config_manager.set_web_search_api_key("brave", settings_grid.get_node("BraveApiKey").text)
+		if settings_grid.has_node("EnableObsidian"):
+			config_manager.set_setting("enable_obsidian", settings_grid.get_node("EnableObsidian").button_pressed)
+		var obsidian_backend_node := settings_grid.get_node_or_null("ObsidianBackend") as OptionButton
+		if obsidian_backend_node:
+			config_manager.set_setting(
+				"obsidian_backend",
+				String(obsidian_backend_node.get_item_metadata(obsidian_backend_node.selected))
+			)
+		if settings_grid.has_node("ObsidianVaultPath"):
+			config_manager.set_setting(
+				"obsidian_vault_path",
+				settings_grid.get_node("ObsidianVaultPath").text.strip_edges()
+			)
+		if settings_grid.has_node("ObsidianRestUrl"):
+			config_manager.set_setting(
+				"obsidian_rest_url",
+				settings_grid.get_node("ObsidianRestUrl").text.strip_edges()
+			)
+		if settings_grid.has_node("ObsidianRestApiKey") and not config_manager.is_obsidian_rest_api_key_from_env():
+			config_manager.set_obsidian_rest_api_key(settings_grid.get_node("ObsidianRestApiKey").text)
 	
 	if _index_section_grid:
 		config_manager.set_setting(

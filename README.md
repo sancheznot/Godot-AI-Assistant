@@ -47,7 +47,7 @@
 
 **AI-powered editor assistant for Godot 4** — chat with local or cloud models, run a multi-step agent with editor tools, search the web, download assets, interact with other plugins, and manage sessions from the dock.
 
-Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.1**
+Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.3**
 
 ---
 
@@ -126,6 +126,11 @@ Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax
   - **`download_file`** — download HTTPS files (textures, `.glb`, audio) straight into `res://`
   - Typical flow: `web_search` → pick a URL → `download_file` → place in scene
 - **External plugin support** — `list_plugins`, `inspect_plugin`, and `call_node_method` work with **any** installed plugin (Terrain3D, DialogueManager, etc.)
+- **Obsidian vault integration** — connect your notes vault to the agent
+  - **`search_obsidian`** — search notes by text (design docs, lore, tasks)
+  - **`read_obsidian_note`** — read a vault note by path
+  - Two backends: **local folder** (Obsidian can be closed) or **[Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api)** plugin (native search, tags, backlinks)
+  - Config UI with links to install the REST plugin + vault path / API key setup
 - **Skills system** — Markdown skills (`/skill`, dropdown, `@skill:id`)
 - **Project context** — open scene, selection, `@file` mentions, hybrid project index + docs search
 
@@ -226,6 +231,7 @@ Settings (endpoints, models, toggles) are stored in `config/plugin_config.json`.
 | **Passphrase** | `GOLEM_AI_SECRETS_PASSPHRASE` | Optional. Custom passphrase for `secrets.enc`. Default: machine id (per device). |
 | **Environment** | `GOLEM_AI_API_KEY_<PROVIDER>` | Optional override per provider, e.g. `GOLEM_AI_API_KEY_OPENAI`, `GOLEM_AI_API_KEY_MINIMAX`. Takes priority over the encrypted store. |
 | **Web search** | `GOLEM_AI_API_KEY_SERPER`, `GOLEM_AI_API_KEY_BRAVE` | Optional keys for the `web_search` tool (Config → Settings). |
+| **Obsidian REST** | `GOLEM_AI_API_KEY_OBSIDIAN_REST` | Optional key for the Obsidian Local REST API backend. |
 
 On first launch after updating, keys still present in an old `plugin_config.json` are **migrated automatically** to `secrets.enc` and removed from the JSON.
 
@@ -237,6 +243,7 @@ Key options in `plugin_config.json`:
 - **Context depth** — `basic` / `intermediate` / `full`
 - **Agent loop** — multi-step verify & fix with editor tools
 - **Web search** — Serper or Brave API (`enable_web_search`, provider + API key in Config → Settings)
+- **Obsidian** — vault path (folder mode) or REST API URL + key (Config → Settings)
 - **enable_vision** / **enable_thinking** — persisted preferences (respect model capabilities)
 - **Skills path** — folder with `.md` skill files
 - **UI language** — `auto`, `en`, `es`
@@ -265,6 +272,8 @@ Godot-AI-Assistant/             # repo root (for GitHub / Asset Library)
         ├── scripts/
         │   ├── ui_plugin.gd
         │   ├── ai_model_handler.gd
+        │   ├── obsidian_service.gd
+        │   ├── http_sync_util.gd
         │   └── …
         └── skills/             # Built-in skills (.md)
 ```
@@ -296,9 +305,13 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 
 ### Novedades recientes (v1.4.x)
 
+- **Obsidian**: `search_obsidian` y `read_obsidian_note` — carpeta local o REST API ([Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api))
 - **Búsqueda web**: tool `web_search` con API de **Serper** o **Brave** (modo `web` o `images` para texturas)
 - **Descarga de assets**: tool `download_file` — URLs HTTPS → `res://` (texturas, modelos, audio)
 - **Plugins externos**: `list_plugins`, `inspect_plugin`, `call_node_method` para cualquier addon (Terrain3D, etc.)
+- **Creación de escenas mejorada**: `create_scene` y `open_scene` ahora esperan a que el editor cargue — no más "No scene loaded"
+- **Guía Terrain3D**: el agente sabe generar terreno procedural con scripts (no brush API)
+- **HTTP en thread**: `http_sync_util.gd` con soporte HTTP/HTTPS sin congelar el editor
 - **Agente más eficiente**: bootstrap mínimo, menos steps desperdiciados, respuestas informacionales en 1 paso
 - **Adjuntos**: archivos de texto e imágenes en el compositor (📎 / 🖼)
 - **Proveedores**: Ollama, LM Studio, OpenRouter, Kimi, MiniMax, OpenAI, Anthropic, Gemini, Cursor

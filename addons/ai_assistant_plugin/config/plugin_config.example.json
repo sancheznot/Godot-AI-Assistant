@@ -97,6 +97,11 @@
 		"ui_language": "auto",
 		"enable_web_search": true,
 		"web_search_provider": "serper",
-		"web_search_max_results": 8
+		"web_search_max_results": 8,
+		"enable_obsidian": false,
+		"obsidian_backend": "folder",
+		"obsidian_vault_path": "",
+		"obsidian_rest_url": "https://127.0.0.1:27124",
+		"obsidian_max_results": 12
 	}
 }

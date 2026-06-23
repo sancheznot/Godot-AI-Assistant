@@ -6,7 +6,9 @@ const SERPER_WEB_URL := "https://google.serper.dev/search"
 const SERPER_IMAGES_URL := "https://google.serper.dev/images"
 const BRAVE_WEB_URL := "https://api.search.brave.com/res/v1/web/search"
 const BRAVE_IMAGES_URL := "https://api.search.brave.com/res/v1/images/search"
-const HTTP_TIMEOUT_MS := 30000
+const HTTP_TIMEOUT_MS := 60000
+
+const HttpSyncUtil := preload("res://addons/ai_assistant_plugin/scripts/http_sync_util.gd")
 
 const PROVIDER_SERPER := "serper"
 const PROVIDER_BRAVE := "brave"
@@ -148,34 +150,7 @@ func _http_request_sync(
 	method: HTTPClient.Method,
 	body: String
 ) -> Dictionary:
-	if _editor_plugin == null:
-		return {"ok": false, "error": "Editor plugin not initialized"}
-	var http := HTTPRequest.new()
-	_editor_plugin.add_child(http)
-	var response: Dictionary = {}
-	var completed := false
-	http.request_completed.connect(func(result: int, response_code: int, _response_headers: PackedStringArray, response_body: PackedByteArray):
-		response = {
-			"result": result,
-			"code": response_code,
-			"body_text": response_body.get_string_from_utf8(),
-		}
-		completed = true
-	)
-	var err: int = http.request(url, headers, method, body)
-	if err != OK:
-		http.queue_free()
-		return {"ok": false, "error": "HTTP request failed to start: %d" % err}
-	var elapsed := 0
-	while not completed and elapsed < HTTP_TIMEOUT_MS:
-		OS.delay_msec(10)
-		elapsed += 10
-	http.queue_free()
-	if not completed:
-		return {"ok": false, "error": "Web search timed out after %d ms" % HTTP_TIMEOUT_MS}
-	if int(response.get("result", -1)) != HTTPRequest.RESULT_SUCCESS:
-		return {"ok": false, "error": "HTTP error result: %d" % int(response.get("result", -1))}
-	var code: int = int(response.get("code", 0))
-	if code < 200 or code >= 300:
-		return {"ok": false, "error": "HTTP status %d: %s" % [code, String(response.get("body_text", "")).substr(0, 200)]}
-	return {"ok": true, "body_text": String(response.get("body_text", ""))}
+	var http_result: Dictionary = HttpSyncUtil.request(url, headers, method, body, HTTP_TIMEOUT_MS)
+	if not bool(http_result.get("ok", false)):
+		return http_result
+	return {"ok": true, "body_text": String(http_result.get("body_text", ""))}

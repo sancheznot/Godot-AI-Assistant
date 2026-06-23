@@ -318,6 +318,16 @@ func _migrate_legacy_config() -> void:
 		settings["web_search_provider"] = "serper"
 	if not settings.has("web_search_max_results"):
 		settings["web_search_max_results"] = 8
+	if not settings.has("enable_obsidian"):
+		settings["enable_obsidian"] = false
+	if not settings.has("obsidian_backend"):
+		settings["obsidian_backend"] = "folder"
+	if not settings.has("obsidian_vault_path"):
+		settings["obsidian_vault_path"] = ""
+	if not settings.has("obsidian_rest_url"):
+		settings["obsidian_rest_url"] = "https://127.0.0.1:27124"
+	if not settings.has("obsidian_max_results"):
+		settings["obsidian_max_results"] = 12
 
 func _migrate_api_keys_to_secrets() -> void:
 	if secrets_manager == null or not config.has("ai_models"):
@@ -486,3 +496,25 @@ func get_web_search_api_key_env_var(provider_id: String) -> String:
 	if secrets_manager == null:
 		return "GOLEM_AI_API_KEY_%s" % provider_id.to_upper()
 	return secrets_manager.get_env_var_name(provider_id)
+
+const OBSIDIAN_REST_KEY_ID := "obsidian_rest"
+
+func get_obsidian_rest_api_key() -> String:
+	if secrets_manager == null:
+		return ""
+	return String(secrets_manager.get_api_key(OBSIDIAN_REST_KEY_ID)).strip_edges()
+
+func set_obsidian_rest_api_key(api_key: String) -> void:
+	if secrets_manager == null:
+		return
+	secrets_manager.set_api_key(OBSIDIAN_REST_KEY_ID, api_key)
+
+func is_obsidian_rest_api_key_from_env() -> bool:
+	if secrets_manager == null:
+		return false
+	return secrets_manager.is_api_key_from_env(OBSIDIAN_REST_KEY_ID)
+
+func get_obsidian_rest_api_key_env_var() -> String:
+	if secrets_manager == null:
+		return "GOLEM_AI_API_KEY_OBSIDIAN_REST"
+	return secrets_manager.get_env_var_name(OBSIDIAN_REST_KEY_ID)

@@ -15,11 +15,14 @@ const ALLOWED_NODE_TYPES := [
 
 const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spatial_bounds_util.gd")
 const WebSearchService := preload("res://addons/ai_assistant_plugin/scripts/web_search_service.gd")
+const ObsidianService := preload("res://addons/ai_assistant_plugin/scripts/obsidian_service.gd")
+const HttpSyncUtil := preload("res://addons/ai_assistant_plugin/scripts/http_sync_util.gd")
 
 var _editor_plugin: EditorPlugin = null
 var _project_index: RefCounted = null
 var _config_manager: RefCounted = null
 var _web_search: RefCounted = null
+var _obsidian: RefCounted = null
 var _conversation_messages: Array = []
 
 func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null, config_manager: RefCounted = null) -> void:
@@ -28,8 +31,11 @@ func setup(editor_plugin: EditorPlugin, project_index: RefCounted = null, config
 	_config_manager = config_manager
 	if _web_search == null:
 		_web_search = WebSearchService.new()
+	if _obsidian == null:
+		_obsidian = ObsidianService.new()
 	if config_manager != null:
 		_web_search.setup(editor_plugin, config_manager)
+		_obsidian.setup(config_manager)
 
 func set_project_index(project_index: RefCounted) -> void:
 	_project_index = project_index
@@ -100,12 +106,19 @@ External plugin interaction:
 - list_plugins: params {} — lists all enabled editor plugins and autoloads in the project
 - inspect_plugin: params {"node_path":"Terrain3D"} OR {"class_name":"Terrain3D"} — lists public methods, properties and signals of any node or class (works for ANY plugin)
 - call_node_method: params {"node_path":"Terrain3D","method":"set_brush_size","args":[5.0]} — calls any method on any node in the scene tree; use inspect_plugin first to discover available methods
+  TERRAIN GENERATION: Do NOT try to sculpt terrain by calling brush methods in a loop. Instead: 1) create_scene with a Node3D root, 2) add_node with node_type "Terrain3D" (or the exact class name), 3) create_script with a GDScript that generates heightmap data procedurally (noise, regions, etc.) and attach it. Use inspect_plugin to discover the storage/heightmap API first.
 
-Internet / assets:
-- web_search: params {"query":"free grass texture png","mode":"web"} — search the web (Serper or Brave, configured in Settings). mode: web | images (use images for textures/assets).
-- download_file: params {"url":"https://example.com/grass.png","save_path":"res://assets/textures/grass.png"} — download a file from HTTPS into the project (textures, .glb, audio). Use web_search first to find URLs, then download_file.
+Internet / assets (USE THESE — do NOT tell the user to search manually):
+- web_search: params {"query":"free grass texture seamless","mode":"images"} — search the web. mode: web | images.
+  RULES: Call this tool IMMEDIATELY when the user wants assets. Use SHORT simple queries like "free grass texture png" or "mud dirt texture seamless". Do NOT add site: filters or CC0 — just search naturally. Do NOT worry about copyright — that is the user's responsibility. If results are empty, try a different simpler query. NEVER refuse, NEVER tell the user to search themselves.
+- download_file: params {"url":"https://example.com/grass.png","save_path":"res://assets/textures/grass.png"} — download HTTPS file into res://. After web_search returns URLs, pick the best result and download it immediately. Do NOT ask the user which URL to use.
+
+Obsidian vault (optional — enable in Config → Settings):
+- search_obsidian: params {"query":"terrain workflow","limit":8} — search notes in the user's Obsidian vault (design docs, lore, tasks). Uses folder path or Local REST API depending on config.
+- read_obsidian_note: params {"path":"Golem-AI/terrain-notes.md","max_chars":12000} — read one vault note by vault-relative path. Call search_obsidian first if you do not know the path.
 
 Rules:
+- After create_scene, the scene is auto-opened. If the result says "loaded":true, you can add nodes in the SAME step. Otherwise wait for the next step — the editor needs a frame to finish loading.
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
 - To discover assets, use search_project_index or find_project_paths anywhere under res:// (assets folders, SceneBuilder, etc.) — do NOT call list_project_files repeatedly from res:// (results truncate).
@@ -173,6 +186,8 @@ func list_tool_names() -> Array[String]:
 		"call_node_method",
 		"download_file",
 		"web_search",
+		"search_obsidian",
+		"read_obsidian_note",
 	]
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
@@ -267,8 +282,16 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_download_file(params)
 		"web_search":
 			result = _tool_web_search(params)
+		"search_obsidian":
+			result = _tool_search_obsidian(params)
+		"read_obsidian_note":
+			result = _tool_read_obsidian_note(params)
 		_:
 			result = {"ok": false, "error": "Unknown tool: %s" % tool_name}
+	
+	if not bool(result.get("ok", false)):
+		var err_msg: String = String(result.get("error", "failed"))
+		print("[Golem-AI] tool '%s' failed: %s" % [tool_name, err_msg])
 	
 	tool_executed.emit(tool_name, result)
 	return result
@@ -368,6 +391,8 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"list_plugins",
 	"inspect_plugin",
 	"web_search",
+	"search_obsidian",
+	"read_obsidian_note",
 ]
 
 const MUTATING_TOOLS: Array[String] = [
@@ -603,6 +628,23 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"mode": result.get("mode", ""),
 				"query": result.get("query", ""),
 				"results": (result.get("results", []) as Array).slice(0, 8),
+			}
+		"search_obsidian":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"backend": result.get("backend", ""),
+				"query": result.get("query", ""),
+				"results": (result.get("results", []) as Array).slice(0, 12),
+			}
+		"read_obsidian_note":
+			return {
+				"tool": tool_name,
+				"ok": true,
+				"backend": result.get("backend", ""),
+				"path": result.get("path", ""),
+				"truncated": result.get("truncated", false),
+				"content": String(result.get("content", "")).substr(0, 4000),
 			}
 		"download_file":
 			return {
@@ -986,14 +1028,29 @@ func _tool_create_scene(params: Dictionary) -> Dictionary:
 	if packed.pack(root_node) != OK:
 		root_node.free()
 		return {"ok": false, "error": "Failed to pack scene"}
+	root_node.free()
 	if ResourceSaver.save(packed, scene_path) != OK:
 		return {"ok": false, "error": "Failed to save scene"}
 	
 	var ei := _editor_interface()
 	if ei == null:
 		return {"ok": false, "error": "EditorInterface unavailable"}
+	# Forzar reimportación para que Godot reconozca el .tscn recién creado
+	# Force reimport so Godot recognizes the newly created .tscn
+	ei.get_resource_filesystem().scan()
 	ei.open_scene_from_path(scene_path)
-	return {"ok": true, "scene_path": scene_path, "root_type": root_type, "root_name": root_name}
+	# Ceder frames para que el editor cargue la escena / Yield frames for scene load
+	for _i in 20:
+		OS.delay_msec(50)
+		if ei.get_edited_scene_root() != null:
+			break
+	var root := ei.get_edited_scene_root()
+	var result := {"ok": true, "scene_path": scene_path, "root_type": root_type, "root_name": root_name}
+	if root != null:
+		result["loaded"] = true
+	else:
+		result["warning"] = "Scene saved and opened but root not ready — call get_scene_snapshot on the next step"
+	return result
 
 func _tool_get_scene_tree(params: Dictionary = {}) -> Dictionary:
 	var root := _edited_root()
@@ -1391,11 +1448,21 @@ func _tool_open_scene(params: Dictionary) -> Dictionary:
 	var scene_path := String(params.get("scene_path", ""))
 	if scene_path.is_empty() or not scene_path.begins_with("res://"):
 		return {"ok": false, "error": "scene_path must start with res://"}
+	if not FileAccess.file_exists(scene_path):
+		return {"ok": false, "error": "Scene file not found: %s — create it with create_scene first" % scene_path}
 	var ei := _editor_interface()
 	if ei == null:
 		return {"ok": false, "error": "EditorInterface unavailable"}
 	ei.open_scene_from_path(scene_path)
-	return {"ok": true, "opened": scene_path}
+	# Ceder frames al editor para que cargue la escena / Yield frames so the editor loads the scene
+	for _i in 20:
+		OS.delay_msec(50)
+		if ei.get_edited_scene_root() != null:
+			break
+	var root := ei.get_edited_scene_root()
+	if root == null:
+		return {"ok": true, "opened": scene_path, "warning": "Scene file opened but root not ready yet — call get_scene_snapshot on the next step to confirm"}
+	return {"ok": true, "opened": scene_path, "root_name": root.name, "root_type": root.get_class()}
 
 func _tool_save_scene() -> Dictionary:
 	var ei := _editor_interface()
@@ -2851,10 +2918,24 @@ func _tool_web_search(params: Dictionary) -> Dictionary:
 	var limit: int = int(params.get("limit", 0))
 	return _web_search.search(query, mode, limit)
 
+func _tool_search_obsidian(params: Dictionary) -> Dictionary:
+	if _obsidian == null:
+		return {"ok": false, "error": "Obsidian service not configured"}
+	var query: String = String(params.get("query", "")).strip_edges()
+	var limit: int = int(params.get("limit", 0))
+	return _obsidian.search(query, limit)
+
+func _tool_read_obsidian_note(params: Dictionary) -> Dictionary:
+	if _obsidian == null:
+		return {"ok": false, "error": "Obsidian service not configured"}
+	var note_path: String = String(params.get("path", params.get("note_path", ""))).strip_edges()
+	var max_chars: int = int(params.get("max_chars", 12000))
+	return _obsidian.read_note(note_path, max_chars)
+
 const MAX_DOWNLOAD_BYTES := 25 * 1024 * 1024
 const HTTP_DOWNLOAD_TIMEOUT_MS := 120000
 
-# ponytail: HTTPS download into res:// — no search API, model must supply the URL
+# ponytail: HTTPS download into res:// via HTTPClient.poll (not HTTPRequest — deadlocks in editor)
 func _tool_download_file(params: Dictionary) -> Dictionary:
 	var url: String = String(params.get("url", "")).strip_edges()
 	var save_path: String = String(params.get("save_path", "")).strip_edges()
@@ -2870,33 +2951,10 @@ func _tool_download_file(params: Dictionary) -> Dictionary:
 		var make_dir := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
 		if make_dir != OK:
 			return {"ok": false, "error": "Could not create folder: %s" % dir_path}
-	if _editor_plugin == null:
-		return {"ok": false, "error": "Editor plugin not initialized"}
-	var http := HTTPRequest.new()
-	_editor_plugin.add_child(http)
-	var response: Dictionary = {}
-	var completed := false
-	http.request_completed.connect(func(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray):
-		response = {"result": result, "code": response_code, "body": body}
-		completed = true
-	)
-	var err := http.request(url)
-	if err != OK:
-		http.queue_free()
-		return {"ok": false, "error": "HTTP request failed to start: %d" % err}
-	var elapsed := 0
-	while not completed and elapsed < HTTP_DOWNLOAD_TIMEOUT_MS:
-		OS.delay_msec(10)
-		elapsed += 10
-	http.queue_free()
-	if not completed:
-		return {"ok": false, "error": "Download timed out after %d ms" % HTTP_DOWNLOAD_TIMEOUT_MS}
-	if int(response.get("result", -1)) != HTTPRequest.RESULT_SUCCESS:
-		return {"ok": false, "error": "HTTP error result: %d" % int(response.get("result", -1))}
-	var code: int = int(response.get("code", 0))
-	if code < 200 or code >= 300:
-		return {"ok": false, "error": "HTTP status %d" % code}
-	var body: PackedByteArray = response.get("body", PackedByteArray())
+	var http_result: Dictionary = HttpSyncUtil.request(url, PackedStringArray(), HTTPClient.METHOD_GET, "", HTTP_DOWNLOAD_TIMEOUT_MS)
+	if not bool(http_result.get("ok", false)):
+		return http_result
+	var body: PackedByteArray = http_result.get("body", PackedByteArray())
 	if body.size() > MAX_DOWNLOAD_BYTES:
 		return {"ok": false, "error": "File too large (%d bytes, max %d)" % [body.size(), MAX_DOWNLOAD_BYTES]}
 	if body.is_empty():
