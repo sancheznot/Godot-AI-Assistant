@@ -135,6 +135,7 @@ Rules:
 - Inspect the scene only when you truly need info, then act immediately (create_script, set_node_property, etc.).
 - If the user asks for code to paste themselves ("dame el código", "yo lo hago"), reply with a ```gdscript block and do NOT call create_script.
 - Before editing a script: read_script first, then create_script with the SAME script_path. Do NOT attach a different script file to a node that already has logic (breaks signals/buttons).
+- create_script returns verified:false / ok:false if disk was not updated — do NOT claim success. Close the script tab in Godot if overwrite keeps failing.
 - For UI/menu styling: edit the EXISTING script (read_script → create_script same path) or use set_node_property for theme overrides. Do NOT create a separate "styler" script on the same node.
 - Do NOT repeat save_scene + get_script_errors in a loop. Verify once after edits, then reply with a final summary.
 - Use exact node paths from @ mentions and attached context (e.g. Door_02-n1, Floor_1_exit/Door_02-n1).
@@ -548,6 +549,17 @@ func _compact_tool_entry(entry: Dictionary) -> Dictionary:
 				"lines": result.get("lines", 0),
 				"truncated": bool(result.get("truncated", false)),
 				"content": content if content.length() <= 4000 else content.substr(0, 4000) + "\n... (truncated)",
+			}
+		"create_script", "write_script":
+			return {
+				"tool": tool_name,
+				"ok": bool(result.get("verified", result.get("ok", false))),
+				"script_path": result.get("script_path", ""),
+				"lines": result.get("lines", 0),
+				"verified": bool(result.get("verified", false)),
+				"attached_to": result.get("attached_to", ""),
+				"error": result.get("error", ""),
+				"warning": result.get("warning", ""),
 			}
 		"get_scene_groups":
 			if result.has("group"):
@@ -2158,6 +2170,104 @@ func _tool_inspect_node(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "Node not found"}
 	return {"ok": true, "node": _serialize_node_summary(node, true)}
 
+# Sync open Script Editor tab — evita que el buffer viejo pise el disco al guardar
+# Sync open Script Editor tab — prevents stale buffer from overwriting disk on save
+func _sync_open_script_editor(script_path: String, content: String) -> bool:
+	var ei := _editor_interface()
+	if ei == null:
+		return false
+	var script_editor: ScriptEditor = ei.get_script_editor()
+	if script_editor == null:
+		return false
+	for editor in script_editor.get_open_script_editors():
+		if editor == null or not editor.has_method("get_edited_resource"):
+			continue
+		var res: Resource = editor.get_edited_resource()
+		if res == null or res.resource_path != script_path:
+			continue
+		if editor.has_method("get_code_editor"):
+			var code_edit: CodeEdit = editor.get_code_editor()
+			if code_edit:
+				code_edit.text = content
+				return true
+	return false
+
+func _atomic_write_text_file(global_path: String, content: String) -> Dictionary:
+	var tmp_path := global_path + ".golem_tmp"
+	var tmp := FileAccess.open(tmp_path, FileAccess.WRITE)
+	if tmp == null:
+		var direct := FileAccess.open(global_path, FileAccess.WRITE)
+		if direct == null:
+			return {"ok": false, "error": "Could not open for writing: %s" % global_path}
+		direct.store_string(content)
+		direct.close()
+		return {"ok": true}
+	tmp.store_string(content)
+	tmp.close()
+	if FileAccess.file_exists(global_path):
+		var rm_err: Error = DirAccess.remove_absolute(global_path)
+		if rm_err != OK:
+			var overwrite := FileAccess.open(global_path, FileAccess.WRITE)
+			if overwrite == null:
+				DirAccess.remove_absolute(tmp_path)
+				return {"ok": false, "error": "Could not replace existing file: %s" % global_path}
+			overwrite.store_string(content)
+			overwrite.close()
+			DirAccess.remove_absolute(tmp_path)
+			return {"ok": true}
+	var rename_err: Error = DirAccess.rename_absolute(tmp_path, global_path)
+	if rename_err != OK:
+		DirAccess.remove_absolute(tmp_path)
+		return {"ok": false, "error": "Could not rename temp file to %s (err %d)" % [global_path, rename_err]}
+	return {"ok": true}
+
+func _read_text_file(global_path: String, res_path: String) -> String:
+	var file := FileAccess.open(global_path, FileAccess.READ)
+	if file == null:
+		file = FileAccess.open(res_path, FileAccess.READ)
+	if file == null:
+		return ""
+	var text: String = file.get_as_text()
+	file.close()
+	return text
+
+func _write_script_file(script_path: String, content: String) -> Dictionary:
+	var global_path: String = ProjectSettings.globalize_path(script_path)
+	var synced_editor: bool = _sync_open_script_editor(script_path, content)
+	var write_result: Dictionary = _atomic_write_text_file(global_path, content)
+	if not bool(write_result.get("ok", false)):
+		return write_result
+	var ei := _editor_interface()
+	if ei:
+		var fs = ei.get_resource_filesystem()
+		if fs.has_method("update_file"):
+			fs.update_file(script_path)
+		elif fs.has_method("scan"):
+			fs.scan()
+		if not synced_editor:
+			var script_editor: ScriptEditor = ei.get_script_editor()
+			if script_editor and script_editor.has_method("reload_open_files"):
+				script_editor.reload_open_files()
+	var on_disk: String = _read_text_file(global_path, script_path)
+	var verified: bool = on_disk.strip_edges() == content.strip_edges()
+	if not verified:
+		return {
+			"ok": false,
+			"verified": false,
+			"script_path": script_path,
+			"error": (
+				"Write verification failed — disk still has old content. "
+				+ "Close the script tab in Godot (or enable Editor Settings → Auto Reload Scripts on External Change) and retry."
+			),
+		}
+	return {
+		"ok": true,
+		"verified": true,
+		"script_path": script_path,
+		"lines": content.split("\n").size(),
+		"synced_editor_tab": synced_editor,
+	}
+
 func _tool_create_script(params: Dictionary) -> Dictionary:
 	# Accept both script_path and file_path (models use either).
 	# Aceptar script_path y file_path (los modelos usan cualquiera).
@@ -2210,35 +2320,25 @@ func _tool_create_script(params: Dictionary) -> Dictionary:
 		if make_dir != OK:
 			return {"ok": false, "error": "Could not create folder: %s" % dir_path}
 	
-	var file := FileAccess.open(script_path, FileAccess.WRITE)
-	if file == null:
-		return {"ok": false, "error": "Could not write script: %s" % script_path}
-	file.store_string(content)
-	file.close()
+	var write_result: Dictionary = _write_script_file(script_path, content)
+	if not bool(write_result.get("ok", false)):
+		return write_result
 	
-	var ei := _editor_interface()
-	if ei:
-		ei.get_resource_filesystem().scan()
-	
-	var result := {"ok": true, "script_path": script_path, "lines": content.split("\n").size()}
+	var result: Dictionary = write_result.duplicate(true)
 	
 	if not attach_to.is_empty():
 		var node := _get_node_by_path(attach_to)
 		if node == null:
-			result["attach_warning"] = "Script created but node not found: %s" % attach_to
+			result["attach_warning"] = "Script written but node not found: %s" % attach_to
 		else:
-			var script_res: Script = load(script_path)
+			var script_res: Script = ResourceLoader.load(script_path, "", ResourceLoader.CACHE_MODE_REPLACE)
 			if script_res == null:
-				result["attach_warning"] = "Script created but failed to load for attach"
+				result["attach_warning"] = "Script written but failed to load for attach"
 			else:
 				node.set_script(script_res)
 				result["attached_to"] = _rel_path(node)
 				_mark_unsaved()
 	
-	if ei and ei.has_method("edit_script"):
-		var opened: Script = load(script_path)
-		if opened:
-			ei.edit_script(opened)
 	return result
 
 func _tool_open_script(params: Dictionary) -> Dictionary:
