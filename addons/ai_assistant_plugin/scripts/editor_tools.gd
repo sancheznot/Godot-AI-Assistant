@@ -105,7 +105,9 @@ Scripting (create AND attach a script in ONE call):
 External plugin interaction:
 - list_plugins: params {} — lists all enabled editor plugins and autoloads in the project
 - inspect_plugin: params {"node_path":"Terrain3D"} OR {"class_name":"Terrain3D"} — lists public methods, properties and signals of any node or class (works for ANY plugin)
+- inspect_plugin: params {"plugin_name":"Golem-AI"} — lists Golem-AI EditorPlugin file-write API (write_script_file, queue_file_write, process_file_queue)
 - call_node_method: params {"node_path":"Terrain3D","method":"set_brush_size","args":[5.0]} — calls any method on any node in the scene tree; use inspect_plugin first to discover available methods
+- call_plugin_method: params {"method":"write_script_file","args":["res://scripts/foo.gd","extends Node\\n"]} — calls Golem-AI EditorPlugin methods (NOT scene nodes). Use write_script_file(path, content) to overwrite .gd files reliably.
   TERRAIN GENERATION: Do NOT try to sculpt terrain by calling brush methods in a loop. Instead: 1) create_scene with a Node3D root, 2) add_node with node_type "Terrain3D" (or the exact class name), 3) create_script with a GDScript that generates heightmap data procedurally (noise, regions, etc.) and attach it. Use inspect_plugin to discover the storage/heightmap API first.
 
 Internet / assets (USE THESE — do NOT tell the user to search manually):
@@ -184,6 +186,7 @@ func list_tool_names() -> Array[String]:
 		"save_script",
 		"list_plugins",
 		"inspect_plugin",
+		"call_plugin_method",
 		"call_node_method",
 		"download_file",
 		"web_search",
@@ -277,6 +280,8 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_list_plugins()
 		"inspect_plugin":
 			result = _tool_inspect_plugin(params)
+		"call_plugin_method":
+			result = _tool_call_plugin_method(params)
 		"call_node_method":
 			result = _tool_call_node_method(params)
 		"download_file":
@@ -412,6 +417,7 @@ const MUTATING_TOOLS: Array[String] = [
 	"set_tilemap_cell",
 	"create_scene",
 	"call_node_method",
+	"call_plugin_method",
 	"download_file",
 ]
 
@@ -2231,7 +2237,7 @@ func _read_text_file(global_path: String, res_path: String) -> String:
 	file.close()
 	return text
 
-func _write_script_file(script_path: String, content: String) -> Dictionary:
+func write_script_file(script_path: String, content: String) -> Dictionary:
 	var global_path: String = ProjectSettings.globalize_path(script_path)
 	var synced_editor: bool = _sync_open_script_editor(script_path, content)
 	var write_result: Dictionary = _atomic_write_text_file(global_path, content)
@@ -2360,7 +2366,10 @@ func _tool_read_script(params: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "script_path must be res://.../*.gd"}
 	if not FileAccess.file_exists(script_path):
 		return {"ok": false, "error": "Script does not exist: %s" % script_path}
-	var file := FileAccess.open(script_path, FileAccess.READ)
+	var global_path: String = ProjectSettings.globalize_path(script_path)
+	var file := FileAccess.open(global_path, FileAccess.READ)
+	if file == null:
+		file = FileAccess.open(script_path, FileAccess.READ)
 	if file == null:
 		return {"ok": false, "error": "Could not read script: %s" % script_path}
 	var content: String = file.get_as_text()
@@ -2853,8 +2862,21 @@ func _tool_list_plugins() -> Dictionary:
 
 func _tool_inspect_plugin(params: Dictionary) -> Dictionary:
 	# Inspects a node or class: lists public methods, properties and signals.
-	# Works for any node in the tree or any class registered in ClassDB.
-	# Inspecciona un nodo o clase: lista métodos, propiedades y señales públicas.
+	var plugin_name: String = String(params.get("plugin_name", "")).strip_edges()
+	if plugin_name.to_lower() in ["golem-ai", "golem_ai", "ai_assistant"]:
+		if _editor_plugin == null:
+			return {"ok": false, "error": "Golem-AI plugin not available"}
+		return {
+			"ok": true,
+			"class": "EditorPlugin",
+			"plugin": "Golem-AI",
+			"methods": [
+				{"name": "write_script_file", "args": ["path", "content"], "note": "Overwrite res://.../*.gd with verification"},
+				{"name": "queue_file_write", "args": ["path", "content"], "note": "Queue a script write"},
+				{"name": "process_file_queue", "args": [], "note": "Flush queued writes"},
+			],
+			"usage": "call_plugin_method with method write_script_file — NOT call_node_method",
+		}
 	var node_path: String = String(params.get("node_path", "")).strip_edges()
 	var class_name_param: String = String(params.get("class_name", "")).strip_edges()
 	var limit: int = int(params.get("limit", 40))
@@ -2963,6 +2985,23 @@ func _tool_inspect_plugin(params: Dictionary) -> Dictionary:
 			info["methods"].append({"name": smname, "args": args_list, "source": "script"})
 
 	return info
+
+func _tool_call_plugin_method(params: Dictionary) -> Dictionary:
+	if _editor_plugin == null:
+		return {"ok": false, "error": "Golem-AI EditorPlugin not available"}
+	var method_name: String = String(params.get("method", "")).strip_edges()
+	var args: Array = params.get("args", [])
+	if method_name.is_empty():
+		return {"ok": false, "error": "method is required"}
+	var allowed: PackedStringArray = ["write_script_file", "queue_file_write", "process_file_queue"]
+	if method_name not in allowed:
+		return {"ok": false, "error": "Method '%s' not allowed. Use: %s" % [method_name, ", ".join(allowed)]}
+	if not _editor_plugin.has_method(method_name):
+		return {"ok": false, "error": "EditorPlugin has no method '%s'" % method_name}
+	var result = _editor_plugin.callv(method_name, args)
+	if result is Dictionary:
+		return result
+	return {"ok": true, "method": method_name, "return": result}
 
 # ponytail: one generic tool to call any method on any node — covers all plugins
 func _tool_call_node_method(params: Dictionary) -> Dictionary:

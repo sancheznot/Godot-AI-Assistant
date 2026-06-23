@@ -60,5 +60,26 @@ func _exit_tree() -> void:
 func get_debugger_error_bridge() -> EditorDebuggerPlugin:
 	return debugger_error_bridge
 
+# Escritura de archivos desde tools del agente / File writes from agent tools
+func write_script_file(path: String, content: String) -> Dictionary:
+	if editor_tools == null or not editor_tools.has_method("write_script_file"):
+		return {"ok": false, "error": "Editor tools not initialized"}
+	return editor_tools.write_script_file(path, content)
+
+var _file_write_queue: Array = []
+
+func queue_file_write(path: String, content: String) -> void:
+	_file_write_queue.append({"path": path, "content": content})
+
+func process_file_queue() -> Dictionary:
+	if _file_write_queue.is_empty():
+		return {"ok": true, "processed": 0, "results": []}
+	var results: Array = []
+	for item in _file_write_queue:
+		if item is Dictionary:
+			results.append(write_script_file(String(item.get("path", "")), String(item.get("content", ""))))
+	_file_write_queue.clear()
+	return {"ok": true, "processed": results.size(), "results": results}
+
 func _has_main_screen() -> bool:
 	return false
