@@ -2326,7 +2326,7 @@ func _tool_create_script(params: Dictionary) -> Dictionary:
 		if make_dir != OK:
 			return {"ok": false, "error": "Could not create folder: %s" % dir_path}
 	
-	var write_result: Dictionary = _write_script_file(script_path, content)
+	var write_result: Dictionary = write_script_file(script_path, content)
 	if not bool(write_result.get("ok", false)):
 		return write_result
 	
