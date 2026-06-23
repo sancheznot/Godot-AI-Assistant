@@ -237,6 +237,24 @@ func get_native_tool_schemas() -> Array:
 		})
 	return schemas
 
+func _parse_tool_arguments(args_raw: Variant) -> Dictionary:
+	# Safe parse — empty/invalid JSON must not spam "Expected EOF" errors.
+	# Parseo seguro — JSON vacío/inválido no debe spamear "Expected EOF".
+	if args_raw is Dictionary:
+		return _normalize_tool_params(args_raw)
+	if args_raw == null:
+		return {}
+	var raw: String = String(args_raw).strip_edges()
+	if raw.is_empty() or raw == "null":
+		return {}
+	if not raw.begins_with("{"):
+		return {}
+	var parsed: Variant = JSON.parse_string(raw)
+	return parsed if parsed is Dictionary else {}
+
+func parse_tool_arguments(args_raw: Variant) -> Dictionary:
+	return _parse_tool_arguments(args_raw)
+
 func execute_native_tool_calls(tool_calls: Array) -> Array:
 	var results: Array = []
 	for call in tool_calls:
@@ -245,15 +263,11 @@ func execute_native_tool_calls(tool_calls: Array) -> Array:
 		var func_data: Variant = call.get("function", call)
 		if not func_data is Dictionary:
 			continue
-		var tool_name: String = String(func_data.get("name", ""))
-		var args_raw: Variant = func_data.get("arguments", {})
-		var params: Dictionary = {}
-		if args_raw is String:
-			var parsed_args: Variant = JSON.parse_string(String(args_raw))
-			params = parsed_args if parsed_args is Dictionary else {}
-		elif args_raw is Dictionary:
-			params = args_raw
-		params = _normalize_tool_params(params)
+		var tool_name: String = String(func_data.get("name", "")).strip_edges()
+		if tool_name.is_empty():
+			continue
+		var params: Dictionary = _parse_tool_arguments(func_data.get("arguments", {}))
+		params = _prepare_tool_params(tool_name, params, "")
 		var tool_result: Dictionary = execute_tool(tool_name, params)
 		results.append({
 			"tool": tool_name,
@@ -467,6 +481,9 @@ func list_tool_names() -> Array[String]:
 	return names
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
+	tool_name = tool_name.strip_edges()
+	if tool_name.is_empty():
+		return {"ok": false, "error": "Empty tool name"}
 	if not is_tool_allowed(tool_name):
 		return {
 			"ok": false,
@@ -611,6 +628,9 @@ func _normalize_tool_params(value: Variant) -> Variant:
 			out["content"] = out["code"]
 		if out.has("content") and out["content"] is String:
 			out["content"] = _strip_tool_directive_line(String(out["content"]))
+		for path_key in ["node_path", "script_path", "path", "attach_to", "parent_node_path", "property"]:
+			if out.has(path_key) and out[path_key] is String:
+				out[path_key] = _clean_tool_string(String(out[path_key]))
 		return out
 	if value is Array:
 		var arr: Array = []
@@ -698,75 +718,131 @@ func _rel_path(node: Node) -> String:
 		return str(root.get_path_to(node))
 	return node.name
 
+func sanitize_tool_markup_text(text: String) -> String:
+	# Strip MiniMax interleaved-thinking garbage that breaks XML tool parse.
+	# Quitar basura de MiniMax que rompe el parseo XML de tools.
+	if text.is_empty():
+		return text
+	var out: String = text
+	out = out.replace("]<]minimax[>[", "")
+	out = out.replace("<]minimax[>[", "")
+	out = out.replace("]<]minimax[>", "")
+	out = out.replace("</invoke>", "")
+	out = out.replace("<invoke name=\"", "<tool name=\"")
+	out = out.replace("<invoke name='", "<tool name='")
+	return out
+
+func _clean_tool_string(raw: String) -> String:
+	var value: String = raw.strip_edges()
+	if value.is_empty():
+		return value
+	var cut_markers: PackedStringArray = ["<]minimax", "</node_path>", "</param>", "</invoke>", "<tool", "<tool_call"]
+	for marker in cut_markers:
+		var idx: int = value.find(marker)
+		if idx >= 0:
+			value = value.substr(0, idx).strip_edges()
+	var bracket: int = value.find("]")
+	if bracket >= 0:
+		value = value.substr(0, bracket).strip_edges()
+	return value.strip_edges()
+
+func _gather_tool_specs(text: String) -> Array[Dictionary]:
+	var specs: Array[Dictionary] = []
+	var seen: Dictionary = {}
+	var cleaned: String = sanitize_tool_markup_text(text)
+
+	var _add_spec := func(spec: Dictionary) -> void:
+		if not spec is Dictionary:
+			return
+		var tool_name: String = String(spec.get("tool", "")).strip_edges()
+		if tool_name.is_empty():
+			return
+		var params: Dictionary = spec.get("params", {}) if spec.get("params", {}) is Dictionary else {}
+		var dedupe: String = "%s:%s" % [tool_name, JSON.stringify(params)]
+		if seen.has(dedupe):
+			return
+		seen[dedupe] = true
+		specs.append({"tool": tool_name, "params": params})
+
+	for raw_json in extract_tool_call_json_strings(cleaned):
+		var parsed: Variant = _parse_tool_json(raw_json)
+		if parsed is Dictionary and String(parsed.get("tool", "")).strip_edges().length() > 0:
+			_add_spec.call({"tool": String(parsed.get("tool", "")), "params": parsed.get("params", {})})
+
+	for spec in extract_minimax_xml_tool_calls(cleaned):
+		_add_spec.call(spec)
+	for spec in _salvage_loose_xml_tool_specs(cleaned):
+		_add_spec.call(spec)
+	for spec in _salvage_minimax_tool_specs(cleaned):
+		_add_spec.call(spec)
+	for spec in _salvage_partial_tool_json(cleaned):
+		if spec is Dictionary and spec.has("tool"):
+			_add_spec.call(spec)
+
+	return specs
+
+func _salvage_minimax_tool_specs(text: String) -> Array[Dictionary]:
+	var specs: Array[Dictionary] = []
+	var head := RegEx.new()
+	head.compile("(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))")
+	var matches: Array = head.search_all(text)
+	for i in range(matches.size()):
+		var match_result: RegExMatch = matches[i]
+		var tool_name: String = String(
+			match_result.get_string(1)
+			+ match_result.get_string(2)
+			+ match_result.get_string(3)
+		).strip_edges()
+		if tool_name.is_empty():
+			continue
+		var chunk_end: int = text.length()
+		if i + 1 < matches.size():
+			chunk_end = matches[i + 1].get_start()
+		var chunk: String = text.substr(match_result.get_end(), chunk_end - match_result.get_end())
+		var params: Dictionary = {}
+		_parse_xml_tool_inner(chunk, params)
+		if tool_name == "inspect_node" and not params.has("node_path"):
+			var node_path: String = _salvage_node_path(chunk, text)
+			if not node_path.is_empty():
+				params["node_path"] = node_path
+		if tool_name in ["read_script", "create_script"] and not params.has("script_path"):
+			var script_path: String = infer_script_path(text, String(params.get("content", "")))
+			if not script_path.is_empty():
+				params["script_path"] = script_path
+		specs.append({"tool": tool_name, "params": params})
+	return specs
+
+func _salvage_node_path(chunk: String, full_text: String) -> String:
+	var tag := RegEx.new()
+	tag.compile("(?is)<node_path\\s*>([^<\\[\\]]+)")
+	var match_result := tag.search(chunk)
+	if match_result:
+		return _clean_tool_string(String(match_result.get_string(1)))
+	tag.compile("(?i)\\b(Player(?:/[A-Za-z0-9_]+)?)\\b")
+	match_result = tag.search(chunk)
+	if match_result:
+		return _clean_tool_string(String(match_result.get_string(1)))
+	if chunk.to_lower().contains("camera3d") or full_text.to_lower().contains("player/camera3d"):
+		return "Player/Camera3D"
+	return ""
+
 func parse_and_execute_tool_calls(text: String) -> Array[Dictionary]:
 	var results: Array[Dictionary] = []
-	var seen: Dictionary = {}
-	for raw_json in extract_tool_call_json_strings(text):
-		if seen.has(raw_json):
-			continue
-		seen[raw_json] = true
-		var parsed: Variant = _parse_tool_json(raw_json)
-		if parsed == null or not parsed is Dictionary:
-			results.append({"ok": false, "error": "Invalid tool JSON", "raw": raw_json})
-			continue
-		var tool_name := String(parsed.get("tool", ""))
-		var params: Dictionary = _prepare_tool_params(tool_name, parsed.get("params", {}), text)
+	for spec in _gather_tool_specs(text):
+		var tool_name: String = String(spec.get("tool", ""))
+		var params: Dictionary = _prepare_tool_params(tool_name, spec.get("params", {}), text)
 		var tool_result := execute_tool(tool_name, params)
 		results.append({"tool": tool_name, "params": params, "result": tool_result})
-	if results.is_empty():
-		for spec in extract_minimax_xml_tool_calls(text):
-			var xml_tool: String = String(spec.get("tool", ""))
-			if xml_tool.is_empty() or seen.has(xml_tool):
-				continue
-			seen[xml_tool] = true
-			var xml_params: Dictionary = _prepare_tool_params(xml_tool, spec.get("params", {}), text)
-			results.append({
-				"tool": xml_tool,
-				"params": xml_params,
-				"result": execute_tool(xml_tool, xml_params),
-			})
 	return results
 
 func salvage_tool_calls(text: String) -> Array[Dictionary]:
-	# Extra salvage pass for broken MiniMax / partial markup / Cursor-mode fallback.
-	# Paso extra de rescate para markup roto de MiniMax / parcial / fallback estilo Cursor.
-	var results: Array[Dictionary] = []
-	var seen: Dictionary = {}
-	for spec in _salvage_loose_xml_tool_specs(text):
-		var tool_name: String = String(spec.get("tool", ""))
-		if tool_name.is_empty():
-			continue
-		var dedupe: String = "%s:%s" % [tool_name, JSON.stringify(spec.get("params", {}))]
-		if seen.has(dedupe):
-			continue
-		seen[dedupe] = true
-		var params: Dictionary = _prepare_tool_params(tool_name, spec.get("params", {}), text)
-		results.append({
-			"tool": tool_name,
-			"params": params,
-			"result": execute_tool(tool_name, params),
-		})
-	for spec in _salvage_partial_tool_json(text):
-		var tool_name: String = String(spec.get("tool", ""))
-		if tool_name.is_empty():
-			continue
-		var dedupe_json: String = "%s:%s" % [tool_name, JSON.stringify(spec.get("params", {}))]
-		if seen.has(dedupe_json):
-			continue
-		seen[dedupe_json] = true
-		var params: Dictionary = _prepare_tool_params(tool_name, spec.get("params", {}), text)
-		results.append({
-			"tool": tool_name,
-			"params": params,
-			"result": execute_tool(tool_name, params),
-		})
-	return results
+	return parse_and_execute_tool_calls(text)
 
 func _salvage_loose_xml_tool_specs(text: String) -> Array[Dictionary]:
 	var specs: Array[Dictionary] = []
 	var loose := RegEx.new()
 	loose.compile(
-		"(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*>\\s*(.*?)(?=<tool\\s|</tool_call>|$)"
+		"(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*(?:/>|>\\s*(.*?)(?=<tool\\s|</tool_call>|$))"
 	)
 	for match_result in loose.search_all(text):
 		var tool_name: String = String(
@@ -778,8 +854,6 @@ func _salvage_loose_xml_tool_specs(text: String) -> Array[Dictionary]:
 			continue
 		var params: Dictionary = {}
 		_parse_xml_tool_inner(String(match_result.get_string(4)), params)
-		if params.is_empty():
-			continue
 		specs.append({"tool": tool_name, "params": params})
 	return specs
 
@@ -804,11 +878,12 @@ func _salvage_partial_tool_json(text: String) -> Array[Dictionary]:
 	return specs
 
 func has_tool_calls(text: String) -> bool:
-	if not extract_tool_call_json_strings(text).is_empty():
+	var cleaned: String = sanitize_tool_markup_text(text)
+	if not extract_tool_call_json_strings(cleaned).is_empty():
 		return true
-	if not extract_minimax_xml_tool_calls(text).is_empty():
+	if not extract_minimax_xml_tool_calls(cleaned).is_empty():
 		return true
-	return has_xml_tool_markup(text)
+	return has_xml_tool_markup(cleaned)
 
 func extract_minimax_xml_tool_calls(text: String) -> Array[Dictionary]:
 	# MiniMax-M3 sometimes emits XML-ish tools in content instead of JSON / API tool_calls.
@@ -896,16 +971,30 @@ func _parse_xml_tool_inner(inner: String, params: Dictionary) -> void:
 		).strip_edges()
 		if param_key.is_empty():
 			continue
-		params[param_key] = _coerce_xml_tool_param(String(param_match.get_string(4)).strip_edges())
+		params[param_key] = _coerce_xml_tool_param(_clean_tool_string(String(param_match.get_string(4)).strip_edges()))
+	var unclosed_param := RegEx.new()
+	unclosed_param.compile("(?is)<param\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*>([^<\\n\\[]+)")
+	for param_match in unclosed_param.search_all(inner):
+		var param_key: String = String(
+			param_match.get_string(1)
+			+ param_match.get_string(2)
+			+ param_match.get_string(3)
+		).strip_edges()
+		if param_key.is_empty() or params.has(param_key):
+			continue
+		var param_val: String = _clean_tool_string(String(param_match.get_string(4)).strip_edges())
+		if param_val.is_empty():
+			continue
+		params[param_key] = _coerce_xml_tool_param(param_val)
 	var bare_regex := RegEx.new()
-	bare_regex.compile("(?is)<([a-z_][a-z0-9_]*)\\s*>([^<\\n]*)")
+	bare_regex.compile("(?is)<([a-z_][a-z0-9_]*)\\s*>([^<\\n\\[]*)")
 	for bare_match in bare_regex.search_all(inner):
 		var bare_key: String = String(bare_match.get_string(1)).strip_edges()
 		if bare_key in ["tool", "param", "tool_call"]:
 			continue
 		if bare_key.is_empty() or params.has(bare_key):
 			continue
-		var bare_val: String = String(bare_match.get_string(2)).strip_edges()
+		var bare_val: String = _clean_tool_string(String(bare_match.get_string(2)).strip_edges())
 		if bare_val.is_empty():
 			continue
 		params[bare_key] = _coerce_xml_tool_param(bare_val)
@@ -1050,6 +1139,22 @@ func batch_only_disabled_tool_failures(tool_results: Array) -> bool:
 		if bool(result.get("ok", false)):
 			return false
 		if is_tool_allowed(tool_name):
+			return false
+	return true
+
+func batch_only_broken_inspect_failures(tool_results: Array) -> bool:
+	if tool_results.is_empty():
+		return false
+	for entry in tool_results:
+		if not entry is Dictionary:
+			return false
+		var tool_name: String = String(entry.get("tool", ""))
+		var result: Dictionary = entry.get("result", {})
+		if bool(result.get("ok", false)):
+			return false
+		if tool_name != "inspect_node":
+			return false
+		if not String(result.get("error", "")).contains("Node not found"):
 			return false
 	return true
 
@@ -3188,13 +3293,21 @@ func _serialize_tree_detailed(node: Node, depth: int, max_depth: int) -> Diction
 	return data
 
 func _get_node_by_path(node_path: String) -> Node:
+	return _resolve_scene_node(node_path)
+
+func _resolve_scene_node(node_path: String) -> Node:
 	var root := _edited_root()
 	if root == null:
 		return null
-	var trimmed := node_path.strip_edges()
+	var trimmed: String = _clean_tool_string(node_path)
 	if trimmed.is_empty() or trimmed == ".":
 		return root
-	return root.get_node_or_null(NodePath(trimmed))
+	var node: Node = root.get_node_or_null(NodePath(trimmed))
+	if node != null:
+		return node
+	if trimmed == "Camera3D":
+		return root.get_node_or_null(NodePath("Player/Camera3D"))
+	return null
 
 func _serialize_tree(node: Node, depth: int, max_depth: int) -> Dictionary:
 	var data := {

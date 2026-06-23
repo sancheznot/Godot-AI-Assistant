@@ -381,8 +381,8 @@ func _message_plain_text(message: Dictionary) -> String:
 	return String(content)
 
 func _sanitize_tool_calls_for_api(tool_calls: Array) -> Array:
-	# MiniMax error 2013: tool_calls[].index must be int64, not 0.0 from JSON.parse.
-	# MiniMax error 2013: tool_calls[].index debe ser int64, no 0.0 tras JSON.parse.
+	# MiniMax error 2013: index must be int64; function.arguments must be a JSON string.
+	# MiniMax error 2013: index int64; function.arguments debe ser string JSON.
 	var out: Array = []
 	for call in tool_calls:
 		if not call is Dictionary:
@@ -390,8 +390,25 @@ func _sanitize_tool_calls_for_api(tool_calls: Array) -> Array:
 		var copy: Dictionary = call.duplicate(true)
 		if copy.has("index"):
 			copy["index"] = int(copy["index"])
+		var func_data: Variant = copy.get("function", null)
+		if func_data is Dictionary:
+			var fn: Dictionary = func_data.duplicate(true)
+			fn["arguments"] = _tool_arguments_to_json_string(fn.get("arguments", {}))
+			copy["function"] = fn
 		out.append(copy)
 	return out
+
+func _tool_arguments_to_json_string(args_raw: Variant) -> String:
+	if args_raw is Dictionary:
+		return JSON.stringify(args_raw)
+	var raw: String = String(args_raw).strip_edges()
+	if raw.is_empty() or raw == "null":
+		return "{}"
+	if raw.begins_with("{"):
+		var parsed: Variant = JSON.parse_string(raw)
+		if parsed is Dictionary:
+			return JSON.stringify(parsed)
+	return "{}"
 
 func _sanitize_minimax_value(value: Variant) -> Variant:
 	# MiniMax strictly rejects floats where int64 is expected (index, token limits, etc.).
@@ -437,6 +454,9 @@ func _build_native_assistant_history_message(
 		if not api_message.is_empty() and api_message.has("tool_calls"):
 			var history: Dictionary = api_message.duplicate(true)
 			history["role"] = "assistant"
+			var raw_calls: Variant = history.get("tool_calls", [])
+			if raw_calls is Array:
+				history["tool_calls"] = _sanitize_tool_calls_for_api(raw_calls)
 			return _sanitize_minimax_value(history)
 	var visible: String = _content_for_agent_context(content, parsed)
 	var built: Dictionary = {
@@ -460,10 +480,16 @@ func _transform_messages_for_provider(provider_id: String, messages: Array) -> A
 			continue
 		var role: String = String(message.get("role", "user"))
 		if role == "tool":
+			var tool_call_id: String = String(message.get("tool_call_id", "")).strip_edges()
+			if tool_call_id.is_empty():
+				continue
+			var tool_content: String = String(message.get("content", "")).strip_edges()
+			if tool_content.is_empty():
+				tool_content = "{}"
 			out.append({
 				"role": "tool",
-				"tool_call_id": String(message.get("tool_call_id", "")),
-				"content": String(message.get("content", "")),
+				"tool_call_id": tool_call_id,
+				"content": tool_content,
 			})
 			continue
 		if role == "assistant" and (message.has("tool_calls") or message.has("reasoning_details")):
@@ -1285,7 +1311,14 @@ func _handle_agent_response(
 	elif all_failed:
 		if _try_recover_from_tool_errors(tool_results):
 			return
-		_agent_failed_batches += 1
+		var only_broken_inspect: bool = (
+			not tool_results.is_empty()
+			and editor_tools != null
+			and editor_tools.has_method("batch_only_broken_inspect_failures")
+			and editor_tools.batch_only_broken_inspect_failures(tool_results)
+		)
+		if not only_broken_inspect:
+			_agent_failed_batches += 1
 	
 	if _agent_failed_batches >= 2:
 		_finish_agent_loop(
@@ -1335,12 +1368,17 @@ func _handle_agent_response(
 			for entry in tool_results:
 				if not entry is Dictionary:
 					continue
+				var tool_call_id: String = String(entry.get("tool_call_id", "")).strip_edges()
+				if tool_call_id.is_empty():
+					continue
 				var compact_entry: String = JSON.stringify(entry.get("result", entry))
 				if editor_tools != null and editor_tools.has_method("compact_tool_results_for_context"):
 					compact_entry = editor_tools.compact_tool_results_for_context([entry])
+				if compact_entry.strip_edges().is_empty():
+					compact_entry = "{}"
 				_agent_messages.append({
 					"role": "tool",
-					"tool_call_id": String(entry.get("tool_call_id", "")),
+					"tool_call_id": tool_call_id,
 					"content": compact_entry,
 				})
 		else:
@@ -2060,9 +2098,11 @@ func _ollama_tool_call_to_tag(entry: Dictionary) -> String:
 	if tool_name.is_empty():
 		return ""
 	var args: Variant = func_data.get("arguments", {})
-	if args is String:
-		var parsed_args: Variant = JSON.parse_string(String(args))
-		args = parsed_args if parsed_args is Dictionary else {}
+	if editor_tools != null and editor_tools.has_method("parse_tool_arguments"):
+		args = editor_tools.parse_tool_arguments(args)
+	elif args is String:
+		var raw: String = String(args).strip_edges()
+		args = {} if raw.is_empty() or not raw.begins_with("{") else JSON.parse_string(raw)
 	if not args is Dictionary:
 		args = {}
 	return "<tool_call>{\"tool\":\"%s\",\"params\":%s}</tool_call>" % [
