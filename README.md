@@ -47,7 +47,7 @@
 
 **AI-powered editor assistant for Godot 4** — chat with local or cloud models, run a multi-step agent with editor tools, search the web, download assets, interact with other plugins, and manage sessions from the dock.
 
-Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.3**
+Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.4**
 
 ---
 

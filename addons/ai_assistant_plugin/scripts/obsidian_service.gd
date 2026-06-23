@@ -258,7 +258,11 @@ func _rest_base_url() -> String:
 	return raw.trim_suffix("/")
 
 func _rest_api_key() -> String:
-	return _config_manager.get_obsidian_rest_api_key()
+	# Quitar "Bearer " si el usuario lo pegó por error / Strip "Bearer " if pasted by mistake
+	var raw: String = _config_manager.get_obsidian_rest_api_key()
+	if raw.begins_with("Bearer "):
+		raw = raw.substr(7)
+	return raw.strip_edges()
 
 func _vault_api_path(note_path: String) -> String:
 	var rel: String = _normalize_note_path(note_path)
