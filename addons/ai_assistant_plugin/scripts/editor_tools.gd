@@ -2627,7 +2627,6 @@ func _tool_list_plugins() -> Dictionary:
 	# Lists all enabled editor plugins and autoloads in the project.
 	# Lista todos los plugins de editor y autoloads activos.
 	var result: Dictionary = {"ok": true, "editor_plugins": [], "autoloads": []}
-	var settings := ProjectSettings.get_singleton() if Engine.has_singleton("ProjectSettings") else null
 
 	# Enabled editor plugins from project settings
 	# Plugins de editor habilitados desde project settings
