@@ -120,6 +120,7 @@ Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax
 
 - **Editor tools** — optional tool-calling loop in the Godot editor
 - **Agent loop** — multi-step verify & fix with compact tool results (faster, less redundant inspection)
+- **External plugin support** — `list_plugins`, `inspect_plugin`, and `call_node_method` let the agent discover and interact with **any** installed plugin (Terrain3D, DialogueManager, etc.)
 - **Skills system** — Markdown skills (`/skill`, dropdown, `@skill:id`)
 - **Project context** — open scene, selection, `@file` mentions, configurable depth
 
@@ -293,6 +294,7 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 - **Historial**: selección múltiple, archivar/restaurar/eliminar en lote, confirmación al borrar
 - **UI**: bloques colapsables (thinking, tools, código) con botón copiar; modelos agrupados por proveedor
 - **Agente**: respuestas más rápidas, menos inspección redundante, resultados de tools compactos
+- **Plugins externos**: el agente puede descubrir y usar cualquier plugin instalado (Terrain3D, DialogueManager, etc.) via `list_plugins`, `inspect_plugin` y `call_node_method`
 
 Instalación: copia la carpeta a `addons/ai_assistant_plugin`, activa el plugin en Ajustes del proyecto y configura un proveedor desde **Config** en el dock.
 

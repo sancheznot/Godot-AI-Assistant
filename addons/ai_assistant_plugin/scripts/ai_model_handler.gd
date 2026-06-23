@@ -1089,12 +1089,18 @@ func _handle_agent_response(text: String) -> void:
 		_pause_agent_for_user(_max_steps_pause_question(), true)
 		return
 	
-	# 2) No tools this turn. If the model is just summarizing/inspecting but never
-	#    actually performed the task, push it to ACT (limited nudges).
-	# 2) Sin tools este turno. Si el modelo solo resume/inspecciona pero nunca
-	#    ejecutó la tarea, empujarlo a ACTUAR (nudges limitados).
-	var looks_done: bool = _looks_like_task_complete(_visible_response_text(content, parsed))
-	if looks_done and tool_results.is_empty():
+	# 2) No tools this turn — decide: is the response a complete answer or stalling?
+	# 2) Sin tools este turno — decidir: ¿respuesta completa o estancado?
+	var visible_text: String = _visible_response_text(content, parsed)
+	var looks_done: bool = _looks_like_task_complete(visible_text)
+	var is_substantial: bool = _response_is_substantial(visible_text)
+
+	# A) If the response looks complete OR is substantial text without tools,
+	#    finish immediately — no nudges, no extra steps.
+	#    Covers: informational Q&A, final summaries, explanations.
+	# A) Si la respuesta se ve completa O es texto sustancial sin tools,
+	#    terminar inmediatamente — sin nudges ni pasos extra.
+	if looks_done or (is_substantial and not _response_is_narration_only(content, parsed)):
 		_finish_agent_loop(true, _compose_agent_output())
 		return
 	if (looks_done or repeated) and _agent_tools_executed > 0:
@@ -1130,12 +1136,15 @@ func _handle_agent_response(text: String) -> void:
 		elif _agent_model_tool_batches == 0:
 			_agent_act_nudges += 1
 			var needs_example: bool = empty_tool_tags or _response_is_narration_only(content, parsed)
-			if _agent_act_nudges > 6:
+			if _agent_act_nudges > 3:
 				_finish_agent_loop(
-					false,
+					_agent_tools_executed > 0 or is_substantial,
 					_compose_agent_output()
-					+ "\n\n---\nEl modelo no ejecutó ninguna acción pese a varias indicaciones. "
-					+ "Prueba con un modelo más capaz para tools o reformula la petición."
+					+ (
+						"\n\n---\nEl modelo no ejecutó ninguna acción pese a varias indicaciones. "
+						+ "Prueba con un modelo más capaz para tools o reformula la petición."
+						if not is_substantial else ""
+					)
 				)
 				return
 			nudge = _act_now_nudge(needs_example)
@@ -1405,6 +1414,12 @@ func _response_is_narration_only(content: String, parsed: Dictionary) -> bool:
 	var visible: String = _visible_response_text(content, parsed).to_lower()
 	if visible.is_empty():
 		return true
+	# Short "I will…" plans with no real content are narration.
+	# But long explanations that happen to contain "voy a" are NOT narration.
+	# Planes cortos "voy a…" sin contenido real son narración.
+	# Pero explicaciones largas que casualmente contienen "voy a" NO lo son.
+	if visible.length() > 300:
+		return false
 	var markers: PackedStringArray = [
 		"voy a ", "let me ", "i will ", "i'll ", "empezar", "explorar", "explore",
 		"primero", "first i", "esta vez", "this time", "correctamente",
@@ -1413,6 +1428,19 @@ func _response_is_narration_only(content: String, parsed: Dictionary) -> bool:
 		if visible.contains(marker):
 			return true
 	return false
+
+func _response_is_substantial(text: String) -> bool:
+	# A response with real content (>150 chars, not just plan headers).
+	# Used to detect informational answers that don't need tools.
+	# Respuesta con contenido real (>150 chars, no solo encabezados de plan).
+	var stripped: String = text.strip_edges()
+	if stripped.length() < 150:
+		return false
+	var line_count: int = 0
+	for line in stripped.split("\n"):
+		if not line.strip_edges().is_empty():
+			line_count += 1
+	return line_count >= 3
 
 func _ollama_supports_thinking(model_name: String) -> bool:
 	return ModelCapabilities.supports_thinking("ollama", model_name)
@@ -1486,6 +1514,16 @@ func _looks_like_task_complete(text: String) -> bool:
 		"need additional help",
 		"anything else",
 		"algo más",
+		"en resumen",
+		"puedo ayudarte a",
+		"i can help you",
+		"dime qué necesitas",
+		"let me know",
+		"indica qué tarea",
+		"indícame qué",
+		"esperando la tarea",
+		"waiting for",
+		"¿qué quieres que haga",
 	]
 	for marker in markers:
 		if lower.contains(marker):

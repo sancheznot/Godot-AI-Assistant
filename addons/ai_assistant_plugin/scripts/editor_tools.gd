@@ -88,6 +88,11 @@ Scripting (create AND attach a script in ONE call):
   attach_to paths: use "." for the scene ROOT node; use exact paths like "MainMenu/MenuPanel" for children. "MainMenu" alone may hit a child Control, not the root Node3D.
   create_script REFUSES attaching a DIFFERENT script file to a node that already has one — use read_script + create_script with the SAME script_path to edit it.
 
+External plugin interaction:
+- list_plugins: params {} — lists all enabled editor plugins and autoloads in the project
+- inspect_plugin: params {"node_path":"Terrain3D"} OR {"class_name":"Terrain3D"} — lists public methods, properties and signals of any node or class (works for ANY plugin)
+- call_node_method: params {"node_path":"Terrain3D","method":"set_brush_size","args":[5.0]} — calls any method on any node in the scene tree; use inspect_plugin first to discover available methods
+
 Rules:
 - ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
 - NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
@@ -151,6 +156,9 @@ func list_tool_names() -> Array[String]:
 		"open_script",
 		"read_script",
 		"save_script",
+		"list_plugins",
+		"inspect_plugin",
+		"call_node_method",
 	]
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
@@ -235,6 +243,12 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_read_script(params)
 		"save_script":
 			result = {"ok": true, "status": "scripts are saved automatically by create_script"}
+		"list_plugins":
+			result = _tool_list_plugins()
+		"inspect_plugin":
+			result = _tool_inspect_plugin(params)
+		"call_node_method":
+			result = _tool_call_node_method(params)
 		_:
 			result = {"ok": false, "error": "Unknown tool: %s" % tool_name}
 	
@@ -333,6 +347,8 @@ const READ_ONLY_TOOLS: Array[String] = [
 	"read_script",
 	"ask_user",
 	"get_tilemap_cells",
+	"list_plugins",
+	"inspect_plugin",
 ]
 
 const MUTATING_TOOLS: Array[String] = [
@@ -350,6 +366,7 @@ const MUTATING_TOOLS: Array[String] = [
 	"create_mesh_from_file",
 	"set_tilemap_cell",
 	"create_scene",
+	"call_node_method",
 ]
 
 const VERIFY_ONLY_TOOLS: Array[String] = [
@@ -2603,3 +2620,189 @@ func _suggest_scale_for_asset(local_size: Vector3) -> Dictionary:
 		"note": "Multiply prefab scale by suggested_uniform_scale so footprint matches existing floor tiles.",
 		"nearby_typical_scale": median_scale,
 	}
+
+# ── External plugin tools / Herramientas para plugins externos ──
+
+func _tool_list_plugins() -> Dictionary:
+	# Lists all enabled editor plugins and autoloads in the project.
+	# Lista todos los plugins de editor y autoloads activos.
+	var result: Dictionary = {"ok": true, "editor_plugins": [], "autoloads": []}
+	var settings := ProjectSettings.get_singleton() if Engine.has_singleton("ProjectSettings") else null
+
+	# Enabled editor plugins from project settings
+	# Plugins de editor habilitados desde project settings
+	var enabled: PackedStringArray = ProjectSettings.get_setting("editor_plugins/enabled", PackedStringArray())
+	for entry in enabled:
+		var clean: String = entry.strip_edges()
+		if clean.begins_with("res://"):
+			result["editor_plugins"].append(clean)
+
+	# Autoloads (singletons) — often how gameplay plugins register
+	# Autoloads (singletons) — así se registran muchos plugins de gameplay
+	for prop in ProjectSettings.get_property_list():
+		var pname: String = prop.get("name", "")
+		if pname.begins_with("autoload/"):
+			var autoload_name: String = pname.trim_prefix("autoload/")
+			var autoload_path: String = String(ProjectSettings.get_setting(pname, ""))
+			result["autoloads"].append({"name": autoload_name, "path": autoload_path})
+
+	return result
+
+func _tool_inspect_plugin(params: Dictionary) -> Dictionary:
+	# Inspects a node or class: lists public methods, properties and signals.
+	# Works for any node in the tree or any class registered in ClassDB.
+	# Inspecciona un nodo o clase: lista métodos, propiedades y señales públicas.
+	var node_path: String = String(params.get("node_path", "")).strip_edges()
+	var class_name_param: String = String(params.get("class_name", "")).strip_edges()
+	var limit: int = int(params.get("limit", 40))
+
+	var target_class: String = ""
+	var target_node: Node = null
+
+	if not node_path.is_empty():
+		target_node = _get_node_by_path(node_path)
+		if target_node == null:
+			# ponytail: also try scene tree root children by name
+			var tree := Engine.get_main_loop() as SceneTree
+			if tree and tree.root:
+				target_node = tree.root.find_child(node_path, true, false)
+		if target_node == null:
+			return {"ok": false, "error": "Node '%s' not found in scene tree" % node_path}
+		target_class = target_node.get_class()
+	elif not class_name_param.is_empty():
+		if ClassDB.class_exists(class_name_param):
+			target_class = class_name_param
+		else:
+			return {"ok": false, "error": "Class '%s' not found in ClassDB" % class_name_param}
+	else:
+		return {"ok": false, "error": "Provide node_path or class_name"}
+
+	var info: Dictionary = {
+		"ok": true,
+		"class": target_class,
+		"methods": [],
+		"properties": [],
+		"signals": [],
+	}
+
+	# Methods / Métodos
+	var methods: Array = []
+	if target_node:
+		methods = target_node.get_method_list()
+	elif ClassDB.class_exists(target_class):
+		methods = ClassDB.class_get_method_list(target_class, true)
+	var method_count: int = 0
+	for m in methods:
+		var mname: String = m.get("name", "")
+		if mname.begins_with("_") or mname.is_empty():
+			continue
+		var args_list: Array = []
+		for arg in m.get("args", []):
+			args_list.append(arg.get("name", "?"))
+		info["methods"].append({"name": mname, "args": args_list})
+		method_count += 1
+		if method_count >= limit:
+			break
+
+	# Properties / Propiedades
+	var props: Array = []
+	if target_node:
+		props = target_node.get_property_list()
+	elif ClassDB.class_exists(target_class):
+		props = ClassDB.class_get_property_list(target_class, true)
+	var prop_count: int = 0
+	for p in props:
+		var pname: String = p.get("name", "")
+		if pname.begins_with("_") or pname.is_empty():
+			continue
+		var entry: Dictionary = {"name": pname, "type": type_string(p.get("type", 0))}
+		if target_node:
+			var val = target_node.get(pname)
+			if val != null and not (val is Object):
+				entry["value"] = var_to_str(val).substr(0, 80)
+		info["properties"].append(entry)
+		prop_count += 1
+		if prop_count >= limit:
+			break
+
+	# Signals / Señales
+	var sigs: Array = []
+	if target_node:
+		sigs = target_node.get_signal_list()
+	elif ClassDB.class_exists(target_class):
+		sigs = ClassDB.class_get_signal_list(target_class, true)
+	for s in sigs:
+		var sname: String = s.get("name", "")
+		if sname.begins_with("_") or sname.is_empty():
+			continue
+		info["signals"].append(sname)
+
+	# Script methods (GDScript custom methods not in ClassDB)
+	# Métodos de script (métodos custom de GDScript no en ClassDB)
+	if target_node and target_node.get_script():
+		var script: Script = target_node.get_script()
+		info["script_path"] = script.resource_path
+		var script_methods: Array = script.get_script_method_list()
+		for sm in script_methods:
+			var smname: String = sm.get("name", "")
+			if smname.begins_with("_") or smname.is_empty():
+				continue
+			var already := false
+			for existing in info["methods"]:
+				if existing["name"] == smname:
+					already = true
+					break
+			if already:
+				continue
+			var args_list: Array = []
+			for arg in sm.get("args", []):
+				args_list.append(arg.get("name", "?"))
+			info["methods"].append({"name": smname, "args": args_list, "source": "script"})
+
+	return info
+
+# ponytail: one generic tool to call any method on any node — covers all plugins
+func _tool_call_node_method(params: Dictionary) -> Dictionary:
+	# Calls a method on any node in the scene tree.
+	# Use inspect_plugin first to discover available methods.
+	# Llama un método en cualquier nodo del scene tree.
+	var node_path: String = String(params.get("node_path", "")).strip_edges()
+	var method_name: String = String(params.get("method", "")).strip_edges()
+	var args: Array = params.get("args", [])
+
+	if node_path.is_empty() or method_name.is_empty():
+		return {"ok": false, "error": "node_path and method are required"}
+
+	# Blocked methods — prevent destructive operations
+	# Métodos bloqueados — prevenir operaciones destructivas
+	var blocked: PackedStringArray = [
+		"free", "queue_free", "set_script", "remove_child",
+		"queue_redraw", "notification", "propagate_notification",
+	]
+	if method_name in blocked:
+		return {"ok": false, "error": "Method '%s' is blocked for safety" % method_name}
+
+	var target_node: Node = _get_node_by_path(node_path)
+	if target_node == null:
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree and tree.root:
+			target_node = tree.root.find_child(node_path, true, false)
+	if target_node == null:
+		return {"ok": false, "error": "Node '%s' not found" % node_path}
+
+	if not target_node.has_method(method_name):
+		return {"ok": false, "error": "Node '%s' (%s) has no method '%s'" % [node_path, target_node.get_class(), method_name]}
+
+	var result = target_node.callv(method_name, args)
+	var output: Dictionary = {
+		"ok": true,
+		"node": node_path,
+		"class": target_node.get_class(),
+		"method": method_name,
+	}
+	if result != null:
+		if result is Object:
+			output["return"] = str(result)
+		else:
+			output["return"] = result
+	return output
