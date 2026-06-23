@@ -64,6 +64,8 @@
 		"bootstrap_context_mode": "minimal",
 		"enable_agent_loop": true,
 		"enable_editor_tools": true,
+		"enable_native_tool_calling": true,
+		"harness_mode": "core",
 		"enable_thinking": true,
 		"enable_vision": true,
 		"harness_base_context_path": "res://addons/ai_assistant_plugin/harness/base_context.md",

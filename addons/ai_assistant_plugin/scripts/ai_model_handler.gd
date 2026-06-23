@@ -15,6 +15,9 @@ signal response_retry_attempt(attempt: int, max_attempts: int, reason: String)
 
 const MAX_CONVERSATION_MESSAGES := 24
 const DEFAULT_RESPONSE_RETRIES := 2
+const NATIVE_TOOL_PROVIDERS: Array[String] = [
+	"openai", "openrouter", "lmstudio", "kimi", "ollama", "minimax",
+]
 const ModelCapabilities := preload("res://addons/ai_assistant_plugin/scripts/model_capabilities.gd")
 const ComposerAttachments := preload("res://addons/ai_assistant_plugin/scripts/composer_attachments.gd")
 const ThinkingTags := preload("res://addons/ai_assistant_plugin/scripts/thinking_tags.gd")
@@ -25,6 +28,7 @@ var editor_tools: RefCounted = null
 var skills_manager: RefCounted = null
 var project_index: RefCounted = null
 var harness: RefCounted = null
+var local_fallback: RefCounted = null
 
 var http_request: HTTPRequest = null
 var cursor_cloud: RefCounted = null
@@ -51,6 +55,10 @@ var _agent_model_tool_batches: int = 0
 var _agent_failed_batches: int = 0
 var _agent_empty_tag_streak: int = 0
 var _agent_verify_streak: int = 0
+var _agent_had_mutation: bool = false
+var _agent_unparsed_tool_steps: int = 0
+var _agent_script_verify_clean: bool = false
+var _agent_runtime_checked: bool = false
 var _agent_code_only: bool = false
 var _agent_read_only_streak: int = 0
 var _active_user_language: String = "es"
@@ -83,6 +91,8 @@ func setup(
 	
 	harness = preload("res://addons/ai_assistant_plugin/scripts/harness.gd").new()
 	harness.setup(config_mgr, context_builder, tools, skills)
+	local_fallback = preload("res://addons/ai_assistant_plugin/scripts/agent_local_fallback.gd").new()
+	local_fallback.setup(tools)
 	
 	if http_request != null:
 		return
@@ -285,6 +295,10 @@ func _start_agent_loop(provider_id: String, provider_cfg: Dictionary, user_promp
 	_agent_failed_batches = 0
 	_agent_empty_tag_streak = 0
 	_agent_verify_streak = 0
+	_agent_had_mutation = false
+	_agent_unparsed_tool_steps = 0
+	_agent_script_verify_clean = false
+	_agent_runtime_checked = false
 	_agent_code_only = _user_wants_code_only(user_prompt)
 	_agent_read_only_streak = 0
 	_active_user_language = _detect_language(user_prompt)
@@ -366,12 +380,103 @@ func _message_plain_text(message: Dictionary) -> String:
 				return String(part.get("text", ""))
 	return String(content)
 
+func _sanitize_tool_calls_for_api(tool_calls: Array) -> Array:
+	# MiniMax error 2013: tool_calls[].index must be int64, not 0.0 from JSON.parse.
+	# MiniMax error 2013: tool_calls[].index debe ser int64, no 0.0 tras JSON.parse.
+	var out: Array = []
+	for call in tool_calls:
+		if not call is Dictionary:
+			continue
+		var copy: Dictionary = call.duplicate(true)
+		if copy.has("index"):
+			copy["index"] = int(copy["index"])
+		out.append(copy)
+	return out
+
+func _sanitize_minimax_value(value: Variant) -> Variant:
+	# MiniMax strictly rejects floats where int64 is expected (index, token limits, etc.).
+	# MiniMax rechaza floats donde espera int64 (index, límites de tokens, etc.).
+	if value is Dictionary:
+		var out: Dictionary = {}
+		for key in value.keys():
+			var k: String = String(key)
+			var v: Variant = value[key]
+			if k in ["index", "max_tokens", "max_completion_tokens", "created"]:
+				if v is float or v is int:
+					out[k] = int(v)
+				else:
+					out[k] = _sanitize_minimax_value(v)
+			else:
+				out[k] = _sanitize_minimax_value(v)
+		return out
+	if value is Array:
+		var arr: Array = []
+		for item in value:
+			arr.append(_sanitize_minimax_value(item))
+		return arr
+	return value
+
+func _extract_openai_choice_message(api_parsed: Dictionary) -> Dictionary:
+	var choices: Array = api_parsed.get("choices", [])
+	if choices.is_empty() or not choices[0] is Dictionary:
+		return {}
+	var message: Variant = choices[0].get("message", {})
+	return message if message is Dictionary else {}
+
+func _build_native_assistant_history_message(
+	provider_id: String,
+	api_parsed: Dictionary,
+	content: String,
+	parsed: Dictionary,
+	native_calls: Array
+) -> Dictionary:
+	# MiniMax-M3: keep full assistant message (tool_calls + reasoning_details) for interleaved thinking.
+	# MiniMax-M3: conservar el mensaje assistant completo (tool_calls + reasoning_details).
+	if provider_id == "minimax" and not api_parsed.is_empty():
+		var api_message: Dictionary = _extract_openai_choice_message(api_parsed)
+		if not api_message.is_empty() and api_message.has("tool_calls"):
+			var history: Dictionary = api_message.duplicate(true)
+			history["role"] = "assistant"
+			return _sanitize_minimax_value(history)
+	var visible: String = _content_for_agent_context(content, parsed)
+	var built: Dictionary = {
+		"role": "assistant",
+		"content": visible if not visible.strip_edges().is_empty() else null,
+		"tool_calls": _sanitize_tool_calls_for_api(native_calls),
+	}
+	if provider_id == "minimax":
+		return _sanitize_minimax_value(built)
+	return built
+
+func _json_stringify_api_payload(payload: Dictionary, provider_id: String) -> String:
+	if provider_id == "minimax":
+		return JSON.stringify(_sanitize_minimax_value(payload))
+	return JSON.stringify(payload)
+
 func _transform_messages_for_provider(provider_id: String, messages: Array) -> Array:
 	var out: Array = []
 	for message in messages:
 		if not message is Dictionary:
 			continue
 		var role: String = String(message.get("role", "user"))
+		if role == "tool":
+			out.append({
+				"role": "tool",
+				"tool_call_id": String(message.get("tool_call_id", "")),
+				"content": String(message.get("content", "")),
+			})
+			continue
+		if role == "assistant" and (message.has("tool_calls") or message.has("reasoning_details")):
+			var assistant_msg: Dictionary = message.duplicate(true)
+			if not assistant_msg.has("content"):
+				assistant_msg["content"] = null
+			var raw_calls: Variant = assistant_msg.get("tool_calls", [])
+			if raw_calls is Array:
+				assistant_msg["tool_calls"] = _sanitize_tool_calls_for_api(raw_calls)
+			if provider_id == "minimax":
+				assistant_msg = _sanitize_minimax_value(assistant_msg)
+			out.append(assistant_msg)
+			continue
 		var content: Variant = message.get("content", "")
 		var images: Array = message.get("images", [])
 		if role != "user" or images.is_empty():
@@ -464,7 +569,7 @@ func _dispatch_request(provider_id: String, provider_cfg: Dictionary, system_pro
 	
 	query_started.emit(provider_id)
 	_http_in_flight = true
-	var result: int = http_request.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(payload))
+	var result: int = http_request.request(url, headers, HTTPClient.METHOD_POST, _json_stringify_api_payload(payload, provider_id))
 	if result != OK:
 		_http_in_flight = false
 		_pending_provider_id = ""
@@ -668,11 +773,56 @@ func _estimate_ollama_num_ctx(messages: Array, max_tokens: int) -> int:
 		ctx *= 2
 	return clampi(ctx, min_ctx, max_ctx)
 
+func _should_use_native_tools(provider_id: String) -> bool:
+	if not _pending_enable_tools or editor_tools == null:
+		return false
+	if not bool(config_manager.get_setting("enable_native_tool_calling", true)):
+		return false
+	if provider_id not in NATIVE_TOOL_PROVIDERS:
+		return false
+	if _is_cursor_cloud_mode(provider_id, _agent_provider_cfg if _agent_active else _active_provider_cfg):
+		return false
+	return true
+
+func _append_native_tools_to_payload(payload: Dictionary, provider_id: String) -> void:
+	if not _should_use_native_tools(provider_id):
+		return
+	if not editor_tools.has_method("get_native_tool_schemas"):
+		return
+	var schemas: Array = editor_tools.get_native_tool_schemas()
+	if schemas.is_empty():
+		return
+	payload["tools"] = schemas
+	payload["tool_choice"] = "auto"
+
+func _extract_native_tool_calls(provider_id: String, parsed: Dictionary) -> Array:
+	if parsed.is_empty():
+		return []
+	match provider_id:
+		"ollama":
+			if parsed.has("message") and parsed.message is Dictionary:
+				var tool_calls: Variant = parsed.message.get("tool_calls", [])
+				return tool_calls if tool_calls is Array else []
+			return []
+		_:
+			var choices: Array = parsed.get("choices", [])
+			if choices.is_empty():
+				return []
+			var first: Variant = choices[0]
+			if not first is Dictionary:
+				return []
+			var message: Variant = first.get("message", {})
+			if not message is Dictionary:
+				return []
+			var tool_calls_openai: Variant = message.get("tool_calls", [])
+			return tool_calls_openai if tool_calls_openai is Array else []
+
 func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt: String, messages: Array, options: Dictionary = {}) -> Dictionary:
 	var temperature: float = float(config_manager.get_setting("temperature", 0.7))
 	var max_tokens: int = int(config_manager.get_setting("max_tokens", 4096))
 	var model_name: String = String(provider_cfg.get("model", "default"))
 	var api_messages: Array = _transform_messages_for_provider(provider_id, messages)
+	var payload: Dictionary = {}
 	
 	match provider_id:
 		"ollama":
@@ -685,7 +835,7 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 			# Ollama usa num_ctx ~4096 por defecto y TRUNCA prompts más largos en silencio,
 			# lo que hace que el modelo escupa basura como "<". Ajustar al tamaño del prompt.
 			var num_ctx: int = _estimate_ollama_num_ctx(ollama_messages, max_tokens)
-			var payload: Dictionary = {
+			payload = {
 				"model": model_name,
 				"messages": ollama_messages,
 				"stream": false,
@@ -699,7 +849,6 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 			# Solo enviar think a modelos compatibles (qwen2.5-coder devuelve HTTP 400 si no).
 			if ModelCapabilities.supports_thinking(provider_id, model_name):
 				payload["think"] = enable_thinking
-			return payload
 		"gemini":
 			return _build_gemini_payload(model_name, provider_cfg, system_prompt, api_messages, max_tokens, temperature)
 		"anthropic":
@@ -711,14 +860,14 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 				"messages": api_messages
 			}
 		"cursor", "openai", "lmstudio", "openrouter", "kimi":
-			return {
+			payload = {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
 				"messages": _prepend_system_message(system_prompt, api_messages)
 			}
 		"minimax":
-			return {
+			payload = {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
@@ -726,12 +875,15 @@ func _build_payload(provider_id: String, provider_cfg: Dictionary, system_prompt
 				"reasoning_split": true,
 			}
 		_:
-			return {
+			payload = {
 				"model": model_name,
 				"max_tokens": max_tokens,
 				"temperature": temperature,
 				"messages": _prepend_system_message(system_prompt, api_messages)
 			}
+	
+	_append_native_tools_to_payload(payload, provider_id)
+	return payload
 
 func _build_gemini_payload(
 	model_name: String,
@@ -849,8 +1001,10 @@ func _on_request_completed(result: int, response_code: int, _headers: PackedStri
 		return
 	
 	var text: String = _extract_response_text(provider_id, parsed)
+	var api_dict: Dictionary = parsed if parsed is Dictionary else {}
+	var native_calls: Array = _extract_native_tool_calls(provider_id, api_dict)
 	_store_response_debug(body_text, text)
-	if text.is_empty():
+	if text.is_empty() and native_calls.is_empty():
 		if _try_retry_response("empty"):
 			return
 		if _agent_active:
@@ -859,11 +1013,11 @@ func _on_request_completed(result: int, response_code: int, _headers: PackedStri
 		return
 	
 	if _agent_active:
-		_handle_agent_response(text)
+		_handle_agent_response(text, api_dict, provider_id, native_calls)
 	else:
-		_handle_single_response(text)
+		_handle_single_response(text, api_dict, provider_id, native_calls)
 
-func _handle_single_response(text: String) -> void:
+func _handle_single_response(text: String, api_parsed: Dictionary = {}, provider_id: String = "", native_calls: Array = []) -> void:
 	var evaluation: Dictionary = _evaluate_response_text(text)
 	if not bool(evaluation.get("ok", false)):
 		if _try_retry_response(String(evaluation.get("reason", "unusable"))):
@@ -873,14 +1027,25 @@ func _handle_single_response(text: String) -> void:
 	var parsed: Dictionary = evaluation.get("parsed", _process_model_text(text))
 	var content: String = String(evaluation.get("content", String(parsed.get("content", text))))
 	var final_text: String = _format_model_output(parsed)
-	var tool_source: String = _tool_source_text(parsed, content, text)
-	if _pending_enable_tools and editor_tools and _response_has_tool_calls(tool_source):
-		var tool_results: Array = editor_tools.parse_and_execute_tool_calls(tool_source)
-		if not tool_results.is_empty():
-			final_text += "\n\n### Tool results\n%s" % JSON.stringify(tool_results, "\t")
+	var tool_results: Array = []
+	if _pending_enable_tools and editor_tools:
+		if not native_calls.is_empty() and editor_tools.has_method("execute_native_tool_calls"):
+			tool_results = editor_tools.execute_native_tool_calls(native_calls)
+		else:
+			var tool_source: String = _tool_source_text(parsed, content, text)
+			if _response_has_tool_calls(tool_source):
+				var tool_context: String = "%s\n%s" % [_active_user_prompt, tool_source]
+				tool_results = editor_tools.parse_and_execute_tool_calls(tool_context)
+	if not tool_results.is_empty():
+		final_text += "\n\n### Tool results\n%s" % JSON.stringify(tool_results, "\t")
 	_handle_request_success(true, final_text)
 
-func _handle_agent_response(text: String) -> void:
+func _handle_agent_response(
+	text: String,
+	api_parsed: Dictionary = {},
+	provider_id: String = "",
+	native_calls: Array = []
+) -> void:
 	var evaluation: Dictionary = _evaluate_response_text(text)
 	if not bool(evaluation.get("ok", false)):
 		if _try_retry_response(String(evaluation.get("reason", "unusable"))):
@@ -896,7 +1061,25 @@ func _handle_agent_response(text: String) -> void:
 	if harness != null and harness.has_method("sanitize_display_text"):
 		formatted = harness.sanitize_display_text(formatted)
 	_agent_log.append("### Step %d\n%s" % [_agent_step, formatted])
-	_agent_messages.append({"role": "assistant", "content": _content_for_agent_context(content, parsed)})
+	
+	var used_native_tools: bool = (
+		_pending_enable_tools
+		and editor_tools != null
+		and not native_calls.is_empty()
+		and editor_tools.has_method("execute_native_tool_calls")
+	)
+	if used_native_tools:
+		_agent_messages.append(
+			_build_native_assistant_history_message(
+				provider_id if not provider_id.is_empty() else _agent_provider_id,
+				api_parsed,
+				content,
+				parsed,
+				native_calls
+			)
+		)
+	else:
+		_agent_messages.append({"role": "assistant", "content": _content_for_agent_context(content, parsed)})
 	agent_log_updated.emit(_compose_agent_output(), _agent_step, _agent_max_steps)
 	
 	var signature: String = _agent_response_signature(content, parsed)
@@ -906,16 +1089,46 @@ func _handle_agent_response(text: String) -> void:
 	var tool_calls_detected: bool = (
 		_pending_enable_tools
 		and editor_tools != null
-		and editor_tools.has_tool_calls(tool_source)
+		and (
+			used_native_tools
+			or editor_tools.has_tool_calls(tool_source)
+		)
 	)
 	var empty_tool_tags: bool = (
-		editor_tools != null
+		not used_native_tools
+		and editor_tools != null
 		and editor_tools.has_method("has_empty_tool_call_tags")
 		and editor_tools.has_empty_tool_call_tags(tool_source)
 	)
 	var tool_results: Array = []
 	if tool_calls_detected:
-		tool_results = editor_tools.parse_and_execute_tool_calls(tool_source)
+		if used_native_tools:
+			tool_results = editor_tools.execute_native_tool_calls(native_calls)
+		else:
+			var tool_context: String = "%s\n%s" % [_active_user_prompt, tool_source]
+			tool_results = editor_tools.parse_and_execute_tool_calls(tool_context)
+	
+	if tool_results.is_empty() and local_fallback != null:
+		var fallback_text: String = "%s\n%s" % [tool_source, content]
+		var should_fallback: bool = (
+			tool_calls_detected
+			or _response_has_code_block(content)
+			or _agent_unparsed_tool_steps >= 1
+			or editor_tools.has_xml_tool_markup(fallback_text)
+		)
+		if should_fallback:
+			var fallback_results: Array = local_fallback.try_execute(
+				_active_user_prompt,
+				fallback_text,
+				_agent_unparsed_tool_steps
+			)
+			if not fallback_results.is_empty():
+				tool_results = fallback_results
+				_agent_log.append(
+					"### Local fallback (Cursor mode)\n"
+					+ "Ejecutadas %d acción(es) localmente — el parseo del modelo falló o estaba incompleto."
+					% fallback_results.size()
+				)
 	
 	# Count tool calls that actually changed/inspected the scene without error.
 	# Contar las tool calls que realmente se ejecutaron sin error.
@@ -926,7 +1139,27 @@ func _handle_agent_response(text: String) -> void:
 	_agent_tools_executed += ok_tool_count
 	
 	if tool_calls_detected and tool_results.is_empty():
-		_agent_log.append("### Tool parse warning (step %d)\nNo se pudieron ejecutar los bloques JSON detectados." % _agent_step)
+		_agent_unparsed_tool_steps += 1
+		_agent_log.append(
+			"### Tool parse warning (step %d)\nNo se pudieron ejecutar tools del modelo "
+			+ "(JSON/XML). Revisa el formato MiniMax." % _agent_step
+		)
+		if _agent_step < _agent_max_steps:
+			_agent_messages.append({
+				"role": "user",
+				"content": (
+					"ERROR: Your tool markup was NOT executed. Use ONE of these formats NOW:\n"
+					+ "1) Native tool_calls from the API, OR\n"
+					+ "2) <tool_call>{\"tool\":\"get_scene_snapshot\",\"params\":{}}</tool_call>, OR\n"
+					+ "3) <tool name=\"read_script\"><param name=\"path\">res://scripts/player.gd</param></tool>\n"
+					+ "Do NOT repeat the plan — execute tools immediately."
+					+ _language_hint_suffix()
+				),
+			})
+			_agent_step += 1
+			agent_step_update.emit(_agent_step, _agent_max_steps, "Reintentando parseo de tools…")
+			_send_agent_request()
+			return
 	elif empty_tool_tags and tool_results.is_empty():
 		_agent_empty_tag_streak += 1
 		_agent_log.append("### Tool parse warning (step %d)\nDetecté <tool_call></tool_call> vacío — falta JSON dentro del tag. (racha: %d)" % [_agent_step, _agent_empty_tag_streak])
@@ -1013,30 +1246,45 @@ func _handle_agent_response(text: String) -> void:
 		_agent_read_only_streak += 1
 	elif ok_tool_count > 0:
 		_agent_read_only_streak = 0
+	if editor_tools != null and editor_tools.batch_had_mutation(tool_results):
+		_agent_had_mutation = true
+		_agent_script_verify_clean = false
+		_agent_runtime_checked = false
+	if editor_tools != null and editor_tools.batch_has_clean_script_check(tool_results):
+		_agent_script_verify_clean = true
+	if editor_tools != null and editor_tools.batch_has_clean_runtime_check(tool_results):
+		_agent_runtime_checked = true
+	if _agent_script_verify_clean and _runtime_verify_optional():
+		_agent_runtime_checked = true
 	if verify_only and clean_scripts:
 		_agent_verify_streak += 1
 	elif editor_tools != null and editor_tools.batch_had_mutation(tool_results):
 		_agent_verify_streak = 0
 	
-	# Track batches where every tool call failed (e.g. unknown tools). Stop the loop
+	# Track batches where every tool call failed
 	# after two such batches instead of burning all steps re-trying the same broken plan.
 	# Seguir los lotes donde TODAS las tools fallaron (p. ej. tools inexistentes). Cortar
 	# tras dos lotes así en vez de quemar todos los pasos repitiendo el mismo plan roto.
 	var all_failed: bool = not tool_results.is_empty() and ok_tool_count == 0
+	if all_failed and editor_tools != null and editor_tools.batch_only_disabled_tool_failures(tool_results):
+		all_failed = false
 	if ok_tool_count > 0:
 		_agent_stall_count = 0
 		_agent_failed_batches = 0
 		_agent_empty_tag_streak = 0
 	
-	if _agent_verify_streak >= 2 and _agent_tools_executed > 0:
-		_finish_agent_loop(
-			true,
-			_compose_agent_output()
-			+ "\n\n---\nVerificación completada (0 errores de script). "
-			+ "Prueba el juego en el editor. Si algo sigue fallando, dime el error exacto de la consola."
-		)
-		return
+	if verify_only and _agent_had_mutation and _agent_script_verify_clean and _agent_runtime_checked:
+		if editor_tools == null or not editor_tools.batch_has_error_reports(tool_results):
+			_finish_agent_loop(
+				true,
+				_compose_agent_output()
+				+ "\n\n---\nVerificación completada (0 errores de script y debugger). "
+				+ "Prueba el juego (F5) si cambiaste gameplay. Si algo falla, pega el error de consola."
+			)
+			return
 	elif all_failed:
+		if _try_recover_from_tool_errors(tool_results):
+			return
 		_agent_failed_batches += 1
 	
 	if _agent_failed_batches >= 2:
@@ -1055,6 +1303,19 @@ func _handle_agent_response(text: String) -> void:
 		and editor_tools.batch_had_mutation(tool_results)
 	)
 	if _content_has_degenerate_repetition(visible_turn) and not had_mutation and not empty_tool_tags:
+		if _agent_tools_executed == 0 and _response_has_tool_calls(tool_source):
+			_agent_messages.append({
+				"role": "user",
+				"content": (
+					"STOP repeating the plan. You already said what you will do — "
+					+ "call the tools NOW (get_scene_snapshot, read_script, create_script, set_node_property)."
+					+ _language_hint_suffix()
+				),
+			})
+			_agent_step += 1
+			agent_step_update.emit(_agent_step, _agent_max_steps, "Forzando ejecución de tools…")
+			_send_agent_request()
+			return
 		_finish_agent_loop(
 			true,
 			_compose_agent_output()
@@ -1067,11 +1328,24 @@ func _handle_agent_response(text: String) -> void:
 	# Los lotes solo lectura (list/find/inspect) NO consumen un paso del agente.
 	if not tool_results.is_empty() and (_agent_step < _agent_max_steps or batch_read_only or verify_only):
 		if ok_tool_count > 0 and editor_tools != null and editor_tools.batch_had_mutation(tool_results):
-			if _looks_like_task_complete(visible_turn):
+			if _looks_like_task_complete(visible_turn) and not _needs_verify_before_finish():
 				_finish_agent_loop(true, _compose_agent_output())
 				return
-		var followup: String = _build_tool_followup(tool_results)
-		_agent_messages.append({"role": "user", "content": followup})
+		if used_native_tools:
+			for entry in tool_results:
+				if not entry is Dictionary:
+					continue
+				var compact_entry: String = JSON.stringify(entry.get("result", entry))
+				if editor_tools != null and editor_tools.has_method("compact_tool_results_for_context"):
+					compact_entry = editor_tools.compact_tool_results_for_context([entry])
+				_agent_messages.append({
+					"role": "tool",
+					"tool_call_id": String(entry.get("tool_call_id", "")),
+					"content": compact_entry,
+				})
+		else:
+			var followup: String = _build_tool_followup(tool_results)
+			_agent_messages.append({"role": "user", "content": followup})
 		if not batch_read_only and not verify_only:
 			_agent_step += 1
 		var summary: String = "Ejecutadas %d tool(s), continuando…" % tool_results.size()
@@ -1101,9 +1375,17 @@ func _handle_agent_response(text: String) -> void:
 	# A) Si la respuesta se ve completa O es texto sustancial sin tools,
 	#    terminar inmediatamente — sin nudges ni pasos extra.
 	if looks_done or (is_substantial and not _response_is_narration_only(content, parsed)):
+		if _block_hallucinated_summary(visible_text) and _push_summary_blocked_nudge():
+			return
+		if _needs_verify_before_finish() and _push_verify_nudge([]):
+			return
 		_finish_agent_loop(true, _compose_agent_output())
 		return
 	if (looks_done or repeated) and _agent_tools_executed > 0:
+		if _block_hallucinated_summary(visible_text) and _push_summary_blocked_nudge():
+			return
+		if _needs_verify_before_finish() and _push_verify_nudge([]):
+			return
 		_finish_agent_loop(true, _compose_agent_output())
 		return
 	
@@ -1162,6 +1444,108 @@ func _handle_agent_response(text: String) -> void:
 	
 	_finish_agent_loop(true, _compose_agent_output())
 
+func _try_recover_from_tool_errors(tool_results: Array) -> bool:
+	if _agent_step >= _agent_max_steps or tool_results.is_empty():
+		return false
+	var hints: PackedStringArray = []
+	for entry in tool_results:
+		if not entry is Dictionary:
+			continue
+		var err: String = String(entry.get("result", {}).get("error", ""))
+		var lower: String = err.to_lower()
+		if "property not found" in lower and "mesh" in lower:
+			hints.append(
+				"Use create_cylinder_mesh on the parent (e.g. Player) — NOT set_node_property mesh/height."
+			)
+		elif err.contains("create_cylinder_mesh"):
+			hints.append(err)
+	if hints.is_empty():
+		return false
+	var nudge: String = (
+		"Tool error — retry with the correct tool:\n- "
+		+ "\n- ".join(hints)
+		+ "\nFor a visible player body: "
+		+ "<tool_call>{\"tool\":\"create_cylinder_mesh\",\"params\":{\"parent_node_path\":\"Player\",\"node_name\":\"Body\",\"radius\":0.4,\"height\":1.8,\"color\":[0.2,0.6,1.0]}}</tool_call>"
+	)
+	_agent_messages.append({"role": "user", "content": nudge + _language_hint_suffix()})
+	_agent_step += 1
+	agent_step_update.emit(_agent_step, _agent_max_steps, "Corrigiendo tool incorrecta…")
+	_send_agent_request()
+	return true
+
+func _needs_verify_before_finish() -> bool:
+	if not _agent_had_mutation or _agent_code_only:
+		return false
+	if not _agent_script_verify_clean:
+		return true
+	if _agent_runtime_checked or _runtime_verify_optional():
+		return false
+	return true
+
+func _runtime_verify_optional() -> bool:
+	return editor_tools == null or not editor_tools.is_tool_allowed("get_runtime_errors")
+
+func _push_verify_nudge(tool_results: Array) -> bool:
+	if not _needs_verify_before_finish():
+		return false
+	if editor_tools != null and editor_tools.batch_has_error_reports(tool_results):
+		return false
+	if _agent_step >= _agent_max_steps:
+		return false
+	var nudge: String
+	if not _agent_script_verify_clean:
+		nudge = (
+			"STOP — do NOT give the final summary yet. You edited scripts/scenes. "
+			+ "Call get_script_errors once to check parse/compile and debugger buffer."
+		)
+	elif not _agent_runtime_checked and not _runtime_verify_optional():
+		nudge = (
+			"Script check passed. BEFORE final summary call get_runtime_errors once "
+			+ "(debugger/console panel; ask user to F5 first if gameplay logic changed). "
+			+ "If count is 0, then give a short final summary and note playtest if F5 was not run."
+		)
+	else:
+		return false
+	_agent_messages.append({"role": "user", "content": nudge + _language_hint_suffix()})
+	_agent_step += 1
+	agent_step_update.emit(_agent_step, _agent_max_steps, "Verificación obligatoria antes del resumen…")
+	_send_agent_request()
+	return true
+
+func _summary_claims_scene_edits(text: String) -> bool:
+	var lower: String = text.to_lower()
+	var markers: PackedStringArray = [
+		"añadí", "agregué", "bajé", "creé", "modifiqu", "cambié", "actualicé",
+		"cilindro", "player/body", "cambios en la escena", "res://scenes/",
+		"added", "lowered", "created", "updated the scene", "changes in",
+	]
+	for marker in markers:
+		if lower.contains(marker):
+			return true
+	return false
+
+func _block_hallucinated_summary(text: String) -> bool:
+	if _agent_code_only or not _summary_claims_scene_edits(text):
+		return false
+	return not _agent_had_mutation and _agent_tools_executed == 0
+
+func _push_summary_blocked_nudge() -> bool:
+	if _agent_step >= _agent_max_steps:
+		return false
+	_agent_messages.append({
+		"role": "user",
+		"content": (
+			"STOP: You wrote a final summary claiming scene/script edits, but NO editor tool succeeded. "
+			+ "Do NOT describe changes that did not happen. Execute tools NOW "
+			+ "(create_cylinder_mesh, set_node_property, create_script, etc.) or admit failure."
+			+ _language_hint_suffix()
+		),
+	})
+	_agent_step += 1
+	agent_step_update.emit(_agent_step, _agent_max_steps, "Resumen bloqueado — sin tools exitosas…")
+	_send_agent_request()
+	return true
+
 func _build_tool_followup(tool_results: Array) -> String:
 	var compact: String = (
 		editor_tools.compact_tool_results_for_context(tool_results)
@@ -1178,19 +1562,35 @@ func _build_tool_followup(tool_results: Array) -> String:
 			+ "or reply with a final ```gdscript code block if the user wanted code only."
 		)
 	elif editor_tools and editor_tools.batch_had_mutation(tool_results):
-		parts.append(
-			"Changes applied. Call get_script_errors ONCE if you have not verified yet. "
-			+ "Then reply with a short FINAL SUMMARY in the user's language — do NOT loop save_scene/get_script_errors."
-		)
-	elif editor_tools and editor_tools.batch_is_verify_only(tool_results):
-		if editor_tools.batch_has_clean_script_check(tool_results):
+		if _runtime_verify_optional():
 			parts.append(
-				"Script check passed (0 errors). Reply NOW with a short FINAL SUMMARY in the user's language. "
-				+ "Do NOT call save_scene or get_script_errors again unless you changed something."
+				"Changes applied. Call get_script_errors ONCE (parse/compile). "
+				+ "get_runtime_errors is OFF in core harness — note F5 playtest in the final summary."
 			)
 		else:
 			parts.append(
-				"Fix the reported errors with create_script/set_node_property, then verify once."
+				"Changes applied. BEFORE final summary call get_script_errors ONCE, then get_runtime_errors ONCE "
+				+ "(debugger/console; user must F5 first for in-game errors). Fix any errors, verify again, then summarize."
+			)
+	elif editor_tools and editor_tools.batch_is_verify_only(tool_results):
+		if editor_tools.batch_has_error_reports(tool_results):
+			parts.append(
+				"Errors reported — fix with create_script/set_node_property, then verify again."
+			)
+		elif not editor_tools.batch_has_clean_script_check(tool_results):
+			parts.append(
+				"Call get_script_errors once to check parse/compile errors."
+				+ ("" if _runtime_verify_optional() else ", then get_runtime_errors for debugger/console.")
+			)
+		elif not editor_tools.batch_has_clean_runtime_check(tool_results) and not _runtime_verify_optional():
+			parts.append(
+				"Script check passed. Call get_runtime_errors once (debugger panel; F5 first if gameplay changed), then final summary."
+			)
+		elif editor_tools.batch_has_clean_script_check(tool_results):
+			parts.append(
+				"Script check passed (0 errors). Reply with a short FINAL SUMMARY"
+				+ (" and note F5 playtest." if _runtime_verify_optional() else ". Call get_runtime_errors once first.")
+				+ " Do NOT loop save_scene/get_script_errors unless you changed something."
 			)
 	parts.append(
 		"Continue the task. Prefer ONE action per step. "
@@ -1272,6 +1672,10 @@ func _reset_agent_state() -> void:
 	_agent_failed_batches = 0
 	_agent_empty_tag_streak = 0
 	_agent_verify_streak = 0
+	_agent_had_mutation = false
+	_agent_unparsed_tool_steps = 0
+	_agent_script_verify_clean = false
+	_agent_runtime_checked = false
 	_agent_tools_executed = 0
 	_agent_act_nudges = 0
 	_agent_model_tool_batches = 0

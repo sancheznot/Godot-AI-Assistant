@@ -47,7 +47,7 @@
 
 **AI-powered editor assistant for Godot 4** — chat with local or cloud models, run a multi-step agent with editor tools, search the web, download assets, interact with other plugins, and manage sessions from the dock.
 
-Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.4.4**
+Created by **[sancheznotdev](https://github.com/sancheznot)** · MIT License · **v1.5.4**
 
 ---
 
@@ -118,7 +118,12 @@ Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax
 
 ### Agent & tools
 
-- **Editor tools** — optional tool-calling loop in the Godot editor (scenes, scripts, nodes, TileMap, spatial mapping)
+- **Harness modes** — **Core** (scripts & scenes only; default) or **Full** (web, Obsidian, runtime debugger, all tools)
+- **Native tool calling** — JSON tool schema sent to the API (OpenAI, Ollama, LM Studio, …) instead of `<tool_call>` tags only
+- **Local fallback (Cursor mode)** — when model markup fails, salvage tool calls and write `.gd` from code blocks / XML `<content>` with inferred `script_path`
+- **Reliable script writes** — multiline `create_script` XML, path inference (`orbit_camera.gd` → `res://scripts/…`), `@tool` line stripping
+- **Anti-hallucination guard** — blocks final summaries that claim edits without successful tool runs; mandatory `get_script_errors` before finish
+- **Editor tools** — optional tool-calling loop in the Godot editor (scenes, scripts, nodes, meshes, spatial mapping)
 - **Agent loop** — multi-step verify & fix with compact tool results and smarter step efficiency
 - **Minimal bootstrap** — lightweight first prompt; fetch project context on demand via tools
 - **Internet & assets**
@@ -242,6 +247,8 @@ Key options in `plugin_config.json`:
 - **Providers** — endpoints, API keys, default models
 - **Context depth** — `basic` / `intermediate` / `full`
 - **Agent loop** — multi-step verify & fix with editor tools
+- **Harness mode** — `core` (default) or `full`; Core skips web/Obsidian/runtime debugger tools
+- **Native tool calling** — `enable_native_tool_calling` (recommended for LM Studio / OpenAI)
 - **Web search** — Serper or Brave API (`enable_web_search`, provider + API key in Config → Settings)
 - **Obsidian** — vault path (folder mode) or REST API URL + key (Config → Settings)
 - **enable_vision** / **enable_thinking** — persisted preferences (respect model capabilities)
@@ -272,6 +279,7 @@ Godot-AI-Assistant/             # repo root (for GitHub / Asset Library)
         ├── scripts/
         │   ├── ui_plugin.gd
         │   ├── ai_model_handler.gd
+        │   ├── agent_local_fallback.gd
         │   ├── obsidian_service.gd
         │   ├── http_sync_util.gd
         │   └── …
@@ -303,7 +311,17 @@ If you use this plugin in a project or video, a mention or link is appreciated �
 
 **Autor:** [sancheznotdev](https://github.com/sancheznot) · Licencia MIT
 
-### Novedades recientes (v1.4.x)
+### Novedades recientes (v1.5.x)
+
+- **Harness Core / Full**: modo Core por defecto — solo edición de scripts y escenas; Full habilita web, Obsidian y debugger runtime
+- **Tool calling nativo**: schema JSON a la API (LM Studio, OpenAI, Ollama…) — más fiable que solo tags XML
+- **Fallback local (modo Cursor)**: si MiniMax u otro modelo rompe el JSON/XML, rescata tools y escribe `.gd` desde bloques de código
+- **`create_script` robusto**: `<content>` multilínea, inferencia de ruta (`orbit_camera.gd`), verificación antes del resumen final
+- **Anti-alucinaciones**: no permite resúmenes que afirman cambios sin tools exitosas
+- **UI Config**: ventana más grande, hints con wrap, opciones harness y native tools
+- **Meshes rápidos**: `create_cylinder_mesh`, `set_node_property` mejorado para materiales/mesh
+
+### Novedades anteriores (v1.4.x)
 
 - **Obsidian**: `search_obsidian` y `read_obsidian_note` — carpeta local o REST API ([Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api))
 - **Búsqueda web**: tool `web_search` con API de **Serper** o **Brave** (modo `web` o `images` para texturas)

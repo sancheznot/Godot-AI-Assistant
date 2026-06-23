@@ -13,6 +13,174 @@ const ALLOWED_NODE_TYPES := [
 	"TileMap", "TileMapLayer", "CanvasLayer", "SubViewport", "CSGBox3D"
 ]
 
+# Core harness: editor editing only — no web/Obsidian/SceneBuilder extras / Solo edición en editor
+const CORE_TOOL_NAMES: Array[String] = [
+	"read_script",
+	"create_script",
+	"create_scene",
+	"open_scene",
+	"save_scene",
+	"add_node",
+	"set_node_property",
+	"inspect_node",
+	"select_node",
+	"get_scene_snapshot",
+	"get_scene_tree",
+	"get_script_errors",
+	"create_cylinder_mesh",
+	"call_plugin_method",
+]
+
+const NATIVE_TOOL_SPECS: Dictionary = {
+	"read_script": {
+		"description": "Read a .gd script file from disk before editing.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"script_path": {"type": "string", "description": "res:// path to the script"},
+				"max_chars": {"type": "integer", "description": "Max characters to return"},
+			},
+			"required": ["script_path"],
+		},
+	},
+	"create_script": {
+		"description": "Write or overwrite a GDScript file and optionally attach it to a scene node.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"script_path": {"type": "string", "description": "res:// path for the script"},
+				"content": {"type": "string", "description": "Full GDScript source code"},
+				"attach_to": {"type": "string", "description": "Scene-relative node path (\".\" = root) or empty"},
+			},
+			"required": ["script_path", "content"],
+		},
+	},
+	"create_scene": {
+		"description": "Create a new .tscn and open it in the editor.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"scene_path": {"type": "string", "description": "res:// path for the new scene"},
+				"root_type": {"type": "string", "description": "Root node class, e.g. Node3D"},
+				"root_name": {"type": "string", "description": "Root node name"},
+			},
+			"required": ["scene_path"],
+		},
+	},
+	"open_scene": {
+		"description": "Open an existing scene in the editor.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"scene_path": {"type": "string", "description": "res:// path to the scene"},
+			},
+			"required": ["scene_path"],
+		},
+	},
+	"save_scene": {
+		"description": "Save the currently edited scene.",
+		"parameters": {"type": "object", "properties": {}},
+	},
+	"add_node": {
+		"description": "Add a child node to the edited scene.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"node_type": {"type": "string", "description": "Godot class name, e.g. Node3D"},
+				"node_name": {"type": "string", "description": "Name for the new node"},
+				"parent_node_path": {"type": "string", "description": "Parent path relative to scene root (\"\" = root)"},
+			},
+			"required": ["node_type", "node_name"],
+		},
+	},
+	"set_node_property": {
+		"description": "Set a property on a node in the edited scene.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"node_path": {"type": "string", "description": "Scene-relative node path"},
+				"property": {"type": "string", "description": "Property name"},
+				"value": {"description": "New property value (JSON type)"},
+			},
+			"required": ["node_path", "property", "value"],
+		},
+	},
+	"inspect_node": {
+		"description": "Inspect a node: type, properties, children summary.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"node_path": {"type": "string", "description": "Scene-relative node path"},
+			},
+			"required": ["node_path"],
+		},
+	},
+	"select_node": {
+		"description": "Select a node in the editor tree.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"node_path": {"type": "string", "description": "Scene-relative node path"},
+			},
+			"required": ["node_path"],
+		},
+	},
+	"get_scene_snapshot": {
+		"description": "Compact tree snapshot of the edited scene.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"max_depth": {"type": "integer", "description": "Tree depth limit"},
+			},
+		},
+	},
+	"get_scene_tree": {
+		"description": "Scene tree listing with node paths.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"max_depth": {"type": "integer", "description": "Tree depth limit"},
+			},
+		},
+	},
+	"get_script_errors": {
+		"description": "GDScript parse errors for a script or the project.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"script_path": {"type": "string", "description": "Optional res:// script path"},
+				"clear_after": {"type": "boolean", "description": "Clear error buffer after read"},
+			},
+		},
+	},
+	"create_cylinder_mesh": {
+		"description": "Add a visible CylinderMesh (player body, pillar, etc.) under a parent node.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"parent_node_path": {"type": "string", "description": "Parent path (\"\" = scene root, \"Player\" = child of root)"},
+				"node_name": {"type": "string", "description": "Name for the MeshInstance3D"},
+				"radius": {"type": "number", "description": "Cylinder radius in meters (default 0.4)"},
+				"height": {"type": "number", "description": "Cylinder height in meters (default 1.8)"},
+				"position": {"type": "array", "description": "[x,y,z] local position"},
+				"color": {"type": "array", "description": "Optional [r,g,b] 0-1 for material"},
+			},
+			"required": ["parent_node_path"],
+		},
+	},
+	"call_plugin_method": {
+		"description": "Call Golem-AI EditorPlugin API (e.g. write_script_file).",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"method": {"type": "string", "description": "Method name, e.g. write_script_file"},
+				"args": {"type": "array", "description": "Method arguments array"},
+			},
+			"required": ["method"],
+		},
+	},
+}
+
 const SpatialBoundsUtil := preload("res://addons/ai_assistant_plugin/scripts/spatial_bounds_util.gd")
 const WebSearchService := preload("res://addons/ai_assistant_plugin/scripts/web_search_service.gd")
 const ObsidianService := preload("res://addons/ai_assistant_plugin/scripts/obsidian_service.gd")
@@ -43,7 +211,106 @@ func set_project_index(project_index: RefCounted) -> void:
 func set_conversation_context(messages: Array) -> void:
 	_conversation_messages = messages.duplicate(true)
 
-func get_tools_prompt() -> String:
+func is_core_harness_mode() -> bool:
+	if _config_manager == null:
+		return true
+	return String(_config_manager.get_setting("harness_mode", "core")).strip_edges().to_lower() != "full"
+
+func is_tool_allowed(tool_name: String) -> bool:
+	if not is_core_harness_mode():
+		return true
+	return tool_name in CORE_TOOL_NAMES
+
+func get_native_tool_schemas() -> Array:
+	var schemas: Array = []
+	for tool_name in CORE_TOOL_NAMES:
+		if not NATIVE_TOOL_SPECS.has(tool_name):
+			continue
+		var spec: Dictionary = NATIVE_TOOL_SPECS[tool_name]
+		schemas.append({
+			"type": "function",
+			"function": {
+				"name": tool_name,
+				"description": String(spec.get("description", tool_name)),
+				"parameters": spec.get("parameters", {"type": "object", "properties": {}}),
+			},
+		})
+	return schemas
+
+func execute_native_tool_calls(tool_calls: Array) -> Array:
+	var results: Array = []
+	for call in tool_calls:
+		if not call is Dictionary:
+			continue
+		var func_data: Variant = call.get("function", call)
+		if not func_data is Dictionary:
+			continue
+		var tool_name: String = String(func_data.get("name", ""))
+		var args_raw: Variant = func_data.get("arguments", {})
+		var params: Dictionary = {}
+		if args_raw is String:
+			var parsed_args: Variant = JSON.parse_string(String(args_raw))
+			params = parsed_args if parsed_args is Dictionary else {}
+		elif args_raw is Dictionary:
+			params = args_raw
+		params = _normalize_tool_params(params)
+		var tool_result: Dictionary = execute_tool(tool_name, params)
+		results.append({
+			"tool": tool_name,
+			"params": params,
+			"tool_call_id": String(call.get("id", "")),
+			"result": tool_result,
+		})
+	return results
+
+func get_tools_prompt(use_native: bool = false) -> String:
+	if is_core_harness_mode():
+		return _get_core_tools_prompt(use_native)
+	return _get_full_tools_prompt(use_native)
+
+func _get_core_tools_prompt(use_native: bool) -> String:
+	var invoke_hint: String
+	if use_native:
+		invoke_hint = (
+			"Tools are invoked via native function calling (API tool_calls). "
+			+ "Do NOT emit <tool_call> tags."
+		)
+	else:
+		invoke_hint = (
+			"When you need editor changes, append tool calls:\n"
+			+ "<tool_call>{\"tool\":\"TOOL_NAME\",\"params\":{...}}</tool_call>"
+		)
+	return (
+		"## Core editor tools (harness mode: core)\n"
+		+ "Focus: edit scripts and scenes in Godot. Web search, Obsidian, SceneBuilder, and asset download tools are OFF.\n\n"
+		+ invoke_hint
+		+ "\n\nAvailable tools:\n"
+		+ "- read_script / create_script — read then write GDScript (same path to edit existing scripts)\n"
+		+ "- create_scene / open_scene / save_scene — scene lifecycle\n"
+		+ "- add_node / set_node_property / create_cylinder_mesh / inspect_node / select_node — node editing\n"
+		+ "- get_scene_snapshot / get_scene_tree — scene inspection\n"
+		+ "- get_script_errors — verify scripts after edits\n"
+		+ "- call_plugin_method — write_script_file(path, content) for reliable disk writes\n\n"
+		+ "Rules:\n"
+		+ "- read_script BEFORE editing an existing script; create_script with the SAME script_path to overwrite\n"
+		+ "- node paths are scene-relative (\"\" = root, \".\" = root in attach_to)\n"
+		+ "- res:// paths only; no @ prefix\n"
+		+ "- After create_scene/open_scene, wait one step before scene tools if not loaded yet\n"
+		+ "- Do NOT claim success if create_script returns ok:false or verified:false\n"
+		+ "- For visible player/body meshes use create_cylinder_mesh — NOT set_node_property mesh/height\n"
+	)
+
+func _get_full_tools_prompt(use_native: bool) -> String:
+	var tag_rules: String = ""
+	if use_native:
+		tag_rules = (
+			"- Prefer native function calling (API tool_calls). Do NOT use <tool_call> tags unless the model lacks tool support.\n"
+		)
+	else:
+		tag_rules = (
+			"- ALWAYS wrap tool calls in <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call>. "
+			+ "Never emit bare JSON tool objects in the user-visible answer.\n"
+		)
 	return """## Editor tools
 When you need to change the Godot editor, append one or more tool calls using this exact format:
 <tool_call>{"tool":"TOOL_NAME","params":{...}}</tool_call>
@@ -92,6 +359,8 @@ Node editing:
 - scale_node_2d: params {"node_path":"Root/Child","scale":[2,2]}
 - rotate_node_3d: params {"node_path":"Root/Child","rotation_degrees":[0,90,0]}
 - create_box_mesh: params {"parent_node_path":"","node_name":"Crate","size":[1,1,1],"position":[0,0.5,0]}
+- create_cylinder_mesh: params {"parent_node_path":"Player","node_name":"Body","radius":0.4,"height":1.8,"position":[0,0.9,0],"color":[0.2,0.6,1.0]}
+  Prefer this for player bodies — do NOT use set_node_property with mesh/height or mesh/top_radius (unsupported).
 - ask_user: params {"question":"¿Altura de piso 3.5m o 4m?","choices":["3.5","4.0"]} — pauses agent until the user replies (does NOT consume a step)
 - set_tilemap_cell: params {"node_path":"Root/TileMapLayer","coords":[3,4],"source_id":0,"atlas_coords":[0,0]}
 
@@ -121,8 +390,7 @@ Obsidian vault (optional — enable in Config → Settings):
 
 Rules:
 - After create_scene, the scene is auto-opened. If the result says "loaded":true, you can add nodes in the SAME step. Otherwise wait for the next step — the editor needs a frame to finish loading.
-- ALWAYS wrap tool calls in <tool_call>{"tool":"...","params":{...}}</tool_call>. Never emit bare JSON tool objects or JSON arrays in the user-visible answer — the plugin executes tools and shows results separately.
-- NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
+""" + tag_rules + """- NEVER ask the user for InputMap action names, node groups, or debugger errors — call get_input_map, get_scene_groups, get_runtime_errors, or get_script_errors instead and fix with create_script/set_node_property.
 - To discover assets, use search_project_index or find_project_paths anywhere under res:// (assets folders, SceneBuilder, etc.) — do NOT call list_project_files repeatedly from res:// (results truncate).
 - SceneBuilder (res://Data/SceneBuilder) is OPTIONAL. Many projects use plain .tscn/.glb under res://assets/ — use instance_scene or create_mesh_from_file.
 - For level building / map layout: call get_scene_spatial_profile first (reference sizes + floor heights), then get_asset_bounds on the prefab, then place with matching scale (often 1 or 100 — check world size, not scale alone).
@@ -144,7 +412,7 @@ Rules:
 - Prefer small, safe edits."""
 
 func list_tool_names() -> Array[String]:
-	return [
+	var names: Array[String] = [
 		"create_scene",
 		"open_scene",
 		"save_scene",
@@ -167,6 +435,7 @@ func list_tool_names() -> Array[String]:
 		"scale_node_2d",
 		"rotate_node_3d",
 		"create_box_mesh",
+		"create_cylinder_mesh",
 		"find_project_paths",
 		"search_project_index",
 		"search_conversation_context",
@@ -193,8 +462,19 @@ func list_tool_names() -> Array[String]:
 		"search_obsidian",
 		"read_obsidian_note",
 	]
+	if is_core_harness_mode():
+		return CORE_TOOL_NAMES.duplicate()
+	return names
 
 func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
+	if not is_tool_allowed(tool_name):
+		return {
+			"ok": false,
+			"error": (
+				"Tool '%s' is disabled in core harness mode. "
+				+ "Switch Config → Harness mode to Full for extended tools."
+			) % tool_name,
+		}
 	params = _normalize_tool_params(params)
 	var result: Dictionary
 	match tool_name:
@@ -242,6 +522,8 @@ func execute_tool(tool_name: String, params: Dictionary = {}) -> Dictionary:
 			result = _tool_rotate_node_3d(params)
 		"create_box_mesh":
 			result = _tool_create_box_mesh(params)
+		"create_cylinder_mesh":
+			result = _tool_create_cylinder_mesh(params)
 		"get_tilemap_cells":
 			result = _tool_get_tilemap_cells(params)
 		"set_tilemap_cell":
@@ -322,6 +604,13 @@ func _normalize_tool_params(value: Variant) -> Variant:
 			out[key] = _normalize_tool_params(value[key])
 		if out.has("parent_path") and not out.has("parent_node_path"):
 			out["parent_node_path"] = out["parent_path"]
+		# MiniMax XML often uses param name="path" for read_script / create_script.
+		if out.has("path") and not out.has("script_path"):
+			out["script_path"] = out["path"]
+		if out.has("code") and not out.has("content"):
+			out["content"] = out["code"]
+		if out.has("content") and out["content"] is String:
+			out["content"] = _strip_tool_directive_line(String(out["content"]))
 		return out
 	if value is Array:
 		var arr: Array = []
@@ -329,6 +618,73 @@ func _normalize_tool_params(value: Variant) -> Variant:
 			arr.append(_normalize_tool_params(item))
 		return arr
 	return value
+
+func _strip_tool_directive_line(content: String) -> String:
+	var trimmed: String = content.strip_edges()
+	if trimmed.begins_with("@tool"):
+		var nl: int = trimmed.find("\n")
+		if nl >= 0:
+			return trimmed.substr(nl + 1).strip_edges()
+		return ""
+	return content
+
+func _prepare_tool_params(tool_name: String, params: Dictionary, context_text: String) -> Dictionary:
+	var normalized: Dictionary = _normalize_tool_params(params)
+	if tool_name in ["create_script", "write_script"]:
+		_fill_missing_script_path(normalized, context_text)
+	return normalized
+
+func _fill_missing_script_path(params: Dictionary, context_text: String) -> void:
+	var script_path: String = String(
+		params.get("script_path", params.get("file_path", params.get("path", "")))
+	).strip_edges()
+	if not script_path.is_empty():
+		var resolved: String = _resolve_res_path(script_path)
+		if not resolved.is_empty():
+			params["script_path"] = resolved
+		return
+	var content: String = String(params.get("content", params.get("code", "")))
+	var inferred: String = infer_script_path(context_text, content)
+	if not inferred.is_empty():
+		params["script_path"] = inferred
+
+func infer_script_path(context_text: String, content: String = "") -> String:
+	var path_regex := RegEx.new()
+	path_regex.compile("res://[\\w/.\\-_]+\\.gd")
+	for match_result in path_regex.search_all(context_text):
+		var candidate: String = _resolve_res_path(String(match_result.get_string()).strip_edges())
+		if not candidate.is_empty():
+			return candidate
+	var file_regex := RegEx.new()
+	file_regex.compile("(?i)([\\w\\-]+\\.gd)\\b")
+	var seen: Dictionary = {}
+	for match_result in file_regex.search_all(context_text):
+		var file_name: String = String(match_result.get_string(1))
+		if seen.has(file_name):
+			continue
+		seen[file_name] = true
+		for prefix in ["scripts/", ""]:
+			var candidate: String = _resolve_res_path("%s%s" % [prefix, file_name])
+			if not candidate.is_empty():
+				return candidate
+		var matches: Array[String] = []
+		_find_matching_files("res://", file_name.get_basename(), [".gd"], 12, matches)
+		for hit in matches:
+			if hit.get_file() == file_name:
+				return hit
+	if content.contains("extends Camera3D"):
+		var camera_hits: Array[String] = []
+		_find_matching_files("res://", "camera", [".gd"], 12, camera_hits)
+		for hit in camera_hits:
+			if "camera" in hit.to_lower():
+				return hit
+	var open_paths: PackedStringArray = _get_open_script_paths()
+	if open_paths.size() == 1:
+		return open_paths[0]
+	for open_path in open_paths:
+		if open_path.get_file().to_lower() in context_text.to_lower():
+			return open_path
+	return ""
 
 func _rel_path(node: Node) -> String:
 	# Scene-relative path instead of the huge absolute editor viewport path.
@@ -354,13 +710,220 @@ func parse_and_execute_tool_calls(text: String) -> Array[Dictionary]:
 			results.append({"ok": false, "error": "Invalid tool JSON", "raw": raw_json})
 			continue
 		var tool_name := String(parsed.get("tool", ""))
-		var params: Dictionary = _normalize_tool_params(parsed.get("params", {}))
+		var params: Dictionary = _prepare_tool_params(tool_name, parsed.get("params", {}), text)
 		var tool_result := execute_tool(tool_name, params)
 		results.append({"tool": tool_name, "params": params, "result": tool_result})
+	if results.is_empty():
+		for spec in extract_minimax_xml_tool_calls(text):
+			var xml_tool: String = String(spec.get("tool", ""))
+			if xml_tool.is_empty() or seen.has(xml_tool):
+				continue
+			seen[xml_tool] = true
+			var xml_params: Dictionary = _prepare_tool_params(xml_tool, spec.get("params", {}), text)
+			results.append({
+				"tool": xml_tool,
+				"params": xml_params,
+				"result": execute_tool(xml_tool, xml_params),
+			})
 	return results
 
+func salvage_tool_calls(text: String) -> Array[Dictionary]:
+	# Extra salvage pass for broken MiniMax / partial markup / Cursor-mode fallback.
+	# Paso extra de rescate para markup roto de MiniMax / parcial / fallback estilo Cursor.
+	var results: Array[Dictionary] = []
+	var seen: Dictionary = {}
+	for spec in _salvage_loose_xml_tool_specs(text):
+		var tool_name: String = String(spec.get("tool", ""))
+		if tool_name.is_empty():
+			continue
+		var dedupe: String = "%s:%s" % [tool_name, JSON.stringify(spec.get("params", {}))]
+		if seen.has(dedupe):
+			continue
+		seen[dedupe] = true
+		var params: Dictionary = _prepare_tool_params(tool_name, spec.get("params", {}), text)
+		results.append({
+			"tool": tool_name,
+			"params": params,
+			"result": execute_tool(tool_name, params),
+		})
+	for spec in _salvage_partial_tool_json(text):
+		var tool_name: String = String(spec.get("tool", ""))
+		if tool_name.is_empty():
+			continue
+		var dedupe_json: String = "%s:%s" % [tool_name, JSON.stringify(spec.get("params", {}))]
+		if seen.has(dedupe_json):
+			continue
+		seen[dedupe_json] = true
+		var params: Dictionary = _prepare_tool_params(tool_name, spec.get("params", {}), text)
+		results.append({
+			"tool": tool_name,
+			"params": params,
+			"result": execute_tool(tool_name, params),
+		})
+	return results
+
+func _salvage_loose_xml_tool_specs(text: String) -> Array[Dictionary]:
+	var specs: Array[Dictionary] = []
+	var loose := RegEx.new()
+	loose.compile(
+		"(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*>\\s*(.*?)(?=<tool\\s|</tool_call>|$)"
+	)
+	for match_result in loose.search_all(text):
+		var tool_name: String = String(
+			match_result.get_string(1)
+			+ match_result.get_string(2)
+			+ match_result.get_string(3)
+		).strip_edges()
+		if tool_name.is_empty():
+			continue
+		var params: Dictionary = {}
+		_parse_xml_tool_inner(String(match_result.get_string(4)), params)
+		if params.is_empty():
+			continue
+		specs.append({"tool": tool_name, "params": params})
+	return specs
+
+func _salvage_partial_tool_json(text: String) -> Array[Dictionary]:
+	var specs: Array[Dictionary] = []
+	var tool_regex := RegEx.new()
+	tool_regex.compile("(?is)\"tool\"\\s*:\\s*\"([a-z_]+)\"")
+	for match_result in tool_regex.search_all(text):
+		var tool_name: String = String(match_result.get_string(1)).strip_edges()
+		if tool_name.is_empty():
+			continue
+		var anchor: int = match_result.get_start()
+		var brace_start: int = text.rfind("{", anchor)
+		if brace_start < 0:
+			continue
+		var block: String = extract_balanced_json_object(text, brace_start)
+		if block.is_empty():
+			continue
+		var parsed: Variant = _parse_tool_json(block)
+		if parsed is Dictionary and String(parsed.get("tool", "")) == tool_name:
+			specs.append(parsed)
+	return specs
+
 func has_tool_calls(text: String) -> bool:
-	return not extract_tool_call_json_strings(text).is_empty()
+	if not extract_tool_call_json_strings(text).is_empty():
+		return true
+	if not extract_minimax_xml_tool_calls(text).is_empty():
+		return true
+	return has_xml_tool_markup(text)
+
+func extract_minimax_xml_tool_calls(text: String) -> Array[Dictionary]:
+	# MiniMax-M3 sometimes emits XML-ish tools in content instead of JSON / API tool_calls.
+	# MiniMax-M3 a veces escupe tools XML en el content en vez de JSON / tool_calls de API.
+	var specs: Array[Dictionary] = []
+	var seen: Dictionary = {}
+	var tool_regex := RegEx.new()
+	# Quoted or unquoted tool names; self-closing or block with <param> children.
+	tool_regex.compile("(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*(?:/>|>(.*?)</tool\\s*>)")
+	for match_result in tool_regex.search_all(text):
+		var tool_name: String = String(
+			match_result.get_string(1)
+			+ match_result.get_string(2)
+			+ match_result.get_string(3)
+		).strip_edges()
+		if tool_name.is_empty():
+			continue
+		var dedupe_key: String = "%s:%s" % [tool_name, match_result.get_string(0)]
+		if seen.has(dedupe_key):
+			continue
+		seen[dedupe_key] = true
+		var params: Dictionary = {}
+		var inner: String = String(match_result.get_string(4)).strip_edges()
+		if not inner.is_empty():
+			_parse_xml_tool_inner(inner, params)
+		specs.append({"tool": tool_name, "params": params})
+	# Unclosed <tool name="X"> blocks (MiniMax often omits </tool> and uses bare <node_path> tags).
+	# Bloques <tool> sin cerrar — MiniMax suele omitir </tool> y usar tags sueltos.
+	if specs.is_empty():
+		var loose_regex := RegEx.new()
+		loose_regex.compile(
+			"(?is)<tool\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*>\\s*(.*?)(?=<tool\\s|</tool_call>|$)"
+		)
+		for match_result in loose_regex.search_all(text):
+			var tool_name: String = String(
+				match_result.get_string(1)
+				+ match_result.get_string(2)
+				+ match_result.get_string(3)
+			).strip_edges()
+			if tool_name.is_empty():
+				continue
+			var dedupe_key: String = "loose:%s:%s" % [tool_name, match_result.get_string(0).substr(0, 80)]
+			if seen.has(dedupe_key):
+				continue
+			seen[dedupe_key] = true
+			var params: Dictionary = {}
+			_parse_xml_tool_inner(String(match_result.get_string(4)), params)
+			specs.append({"tool": tool_name, "params": params})
+	return specs
+
+func _parse_xml_tool_inner(inner: String, params: Dictionary) -> void:
+	if inner.is_empty():
+		return
+	# Multiline tags — MiniMax puts full GDScript inside <content> without </content>.
+	# Tags multilínea — MiniMax mete GDScript completo en <content> sin cerrar.
+	var block_regex := RegEx.new()
+	block_regex.compile(
+		"(?is)<(content|script_path|path|code|file_path)\\s*>(.*?)(?:</\\1\\s*>|$)"
+	)
+	for block_match in block_regex.search_all(inner):
+		var block_key: String = String(block_match.get_string(1)).strip_edges()
+		var block_val: String = String(block_match.get_string(2)).strip_edges()
+		if block_key.is_empty() or block_val.is_empty():
+			continue
+		match block_key:
+			"path", "file_path", "script_path":
+				if not params.has("script_path"):
+					params["script_path"] = block_val
+			"code":
+				if not params.has("content"):
+					params["content"] = block_val
+			"content":
+				if not params.has("content"):
+					params["content"] = block_val
+			_:
+				if not params.has(block_key):
+					params[block_key] = block_val
+	var param_regex := RegEx.new()
+	param_regex.compile("(?is)<param\\s+name\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s/>]+))\\s*>(.*?)</param\\s*>")
+	for param_match in param_regex.search_all(inner):
+		var param_key: String = String(
+			param_match.get_string(1)
+			+ param_match.get_string(2)
+			+ param_match.get_string(3)
+		).strip_edges()
+		if param_key.is_empty():
+			continue
+		params[param_key] = _coerce_xml_tool_param(String(param_match.get_string(4)).strip_edges())
+	var bare_regex := RegEx.new()
+	bare_regex.compile("(?is)<([a-z_][a-z0-9_]*)\\s*>([^<\\n]*)")
+	for bare_match in bare_regex.search_all(inner):
+		var bare_key: String = String(bare_match.get_string(1)).strip_edges()
+		if bare_key in ["tool", "param", "tool_call"]:
+			continue
+		if bare_key.is_empty() or params.has(bare_key):
+			continue
+		var bare_val: String = String(bare_match.get_string(2)).strip_edges()
+		if bare_val.is_empty():
+			continue
+		params[bare_key] = _coerce_xml_tool_param(bare_val)
+
+func has_xml_tool_markup(text: String) -> bool:
+	var lower: String = text.to_lower()
+	return lower.contains("<tool name") or lower.contains("<tool_call>")
+
+func _coerce_xml_tool_param(raw: String) -> Variant:
+	if raw == "true":
+		return true
+	if raw == "false":
+		return false
+	if raw.is_valid_int():
+		return int(raw)
+	if raw.is_valid_float():
+		return float(raw)
+	return raw
 
 func has_empty_tool_call_tags(text: String) -> bool:
 	var tag_regex := RegEx.new()
@@ -369,9 +932,8 @@ func has_empty_tool_call_tags(text: String) -> bool:
 		return false
 	# Only "empty" if we also failed to extract any valid tool JSON
 	# (the tag might contain multiline JSON that the parser now handles).
-	# Solo "vacío" si tampoco pudimos extraer JSON válido
-	# (el tag podría tener JSON multilínea que el parser ahora maneja).
-	return extract_tool_call_json_strings(text).is_empty()
+	# Solo "vacío" si tampoco pudimos extraer JSON válido ni tools XML de MiniMax.
+	return extract_tool_call_json_strings(text).is_empty() and extract_minimax_xml_tool_calls(text).is_empty()
 
 const READ_ONLY_TOOLS: Array[String] = [
 	"get_scene_tree",
@@ -412,6 +974,7 @@ const MUTATING_TOOLS: Array[String] = [
 	"scale_node_2d",
 	"rotate_node_3d",
 	"create_box_mesh",
+	"create_cylinder_mesh",
 	"place_scene_builder_item",
 	"create_mesh_from_file",
 	"set_tilemap_cell",
@@ -459,21 +1022,60 @@ func batch_had_mutation(tool_results: Array) -> bool:
 func batch_is_verify_only(tool_results: Array) -> bool:
 	if tool_results.is_empty():
 		return false
+	var saw_verify: bool = false
 	for entry in tool_results:
 		if not entry is Dictionary:
-			return false
-		if not bool(entry.get("result", {}).get("ok", false)):
 			return false
 		var tool_name: String = String(entry.get("tool", ""))
 		if tool_name not in VERIFY_ONLY_TOOLS:
 			return false
+		saw_verify = true
+		var result: Dictionary = entry.get("result", {})
+		if bool(result.get("ok", false)):
+			continue
+		# Core harness: disabled verify tools are skipped, not a failed batch.
+		if not is_tool_allowed(tool_name):
+			continue
+		return false
+	return saw_verify
+
+func batch_only_disabled_tool_failures(tool_results: Array) -> bool:
+	if tool_results.is_empty():
+		return false
+	for entry in tool_results:
+		if not entry is Dictionary:
+			return false
+		var tool_name: String = String(entry.get("tool", ""))
+		var result: Dictionary = entry.get("result", {})
+		if bool(result.get("ok", false)):
+			return false
+		if is_tool_allowed(tool_name):
+			return false
 	return true
 
 func batch_has_clean_script_check(tool_results: Array) -> bool:
+	return _batch_error_tool_is_clean(tool_results, "get_script_errors")
+
+func batch_has_clean_runtime_check(tool_results: Array) -> bool:
+	return _batch_error_tool_is_clean(tool_results, "get_runtime_errors")
+
+func batch_has_error_reports(tool_results: Array) -> bool:
 	for entry in tool_results:
 		if not entry is Dictionary:
 			continue
-		if String(entry.get("tool", "")) != "get_script_errors":
+		var tool_name: String = String(entry.get("tool", ""))
+		if tool_name not in ["get_script_errors", "get_runtime_errors"]:
+			continue
+		var result: Dictionary = entry.get("result", {})
+		if bool(result.get("ok", false)) and int(result.get("count", 0)) > 0:
+			return true
+	return false
+
+func _batch_error_tool_is_clean(tool_results: Array, tool_name: String) -> bool:
+	for entry in tool_results:
+		if not entry is Dictionary:
+			continue
+		if String(entry.get("tool", "")) != tool_name:
 			continue
 		var result: Dictionary = entry.get("result", {})
 		if not bool(result.get("ok", false)):
@@ -1631,10 +2233,38 @@ func _tool_set_node_property(params: Dictionary) -> Dictionary:
 		_mark_unsaved()
 		return {"ok": true, "node_path": node_path, "property": "script", "value": script_path}
 	
-	if not _property_exists(node, property_name):
-		return {"ok": false, "error": "Property not found: %s" % property_name}
+	var raw_value: Variant = params.get("value")
+	if property_name == "mesh" and raw_value is Dictionary:
+		var mesh_res: Mesh = _mesh_from_dict(raw_value as Dictionary)
+		if mesh_res == null:
+			return {"ok": false, "error": "Invalid mesh dict — use type CylinderMesh or BoxMesh with size/radius/height"}
+		if not node is MeshInstance3D:
+			return {"ok": false, "error": "Node is not MeshInstance3D: %s" % node_path}
+		(node as MeshInstance3D).mesh = mesh_res
+		_mark_unsaved()
+		return {"ok": true, "node_path": node_path, "property": "mesh", "value": mesh_res.get_class()}
 	
-	node.set(property_name, _coerce_value(params.get("value")))
+	if property_name.begins_with("mesh/"):
+		return _tool_set_mesh_subproperty(node, node_path, property_name.substr(5), raw_value)
+	
+	if property_name == "material_override" and raw_value is Dictionary:
+		var mat := StandardMaterial3D.new()
+		var color_arr: Array = (raw_value as Dictionary).get("color", (raw_value as Dictionary).get("albedo_color", []))
+		if color_arr is Array and color_arr.size() >= 3:
+			mat.albedo_color = Color(float(color_arr[0]), float(color_arr[1]), float(color_arr[2]), 1.0)
+		if not node is MeshInstance3D:
+			return {"ok": false, "error": "Node is not MeshInstance3D: %s" % node_path}
+		(node as MeshInstance3D).material_override = mat
+		_mark_unsaved()
+		return {"ok": true, "node_path": node_path, "property": "material_override", "value": "StandardMaterial3D"}
+	
+	if not _property_exists(node, property_name):
+		var hint: String = ""
+		if property_name.begins_with("mesh"):
+			hint = " Use create_cylinder_mesh or set property mesh to {\"type\":\"CylinderMesh\",\"height\":1.8,\"radius\":0.4}."
+		return {"ok": false, "error": "Property not found: %s%s" % [property_name, hint]}
+	
+	node.set(property_name, _coerce_value(raw_value))
 	_mark_unsaved()
 	return {"ok": true, "node_path": node_path, "property": property_name, "value": node.get(property_name)}
 
@@ -1739,6 +2369,93 @@ func _tool_create_box_mesh(params: Dictionary) -> Dictionary:
 		"size": size_array,
 		"position": _vector3_to_array(mesh_instance.position)
 	}
+
+func _tool_create_cylinder_mesh(params: Dictionary) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return {"ok": false, "error": "No scene loaded"}
+	var parent_path := String(params.get("parent_node_path", ""))
+	var node_name := String(params.get("node_name", "CylinderMesh"))
+	var radius: float = float(params.get("radius", params.get("top_radius", 0.4)))
+	var height: float = float(params.get("height", 1.8))
+	var parent_node: Node = root
+	if not parent_path.is_empty():
+		parent_node = root.get_node_or_null(NodePath(parent_path))
+		if parent_node == null:
+			return {"ok": false, "error": "Parent not found: %s" % parent_path}
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.name = _make_unique_name(parent_node, node_name)
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = radius
+	cylinder.bottom_radius = float(params.get("bottom_radius", radius))
+	cylinder.height = height
+	mesh_instance.mesh = cylinder
+	var color_arr: Array = params.get("color", [])
+	if color_arr is Array and color_arr.size() >= 3:
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(float(color_arr[0]), float(color_arr[1]), float(color_arr[2]), 1.0)
+		mesh_instance.material_override = mat
+	parent_node.add_child(mesh_instance)
+	mesh_instance.owner = root
+	var position: Array = params.get("position", [])
+	if position.size() >= 3:
+		mesh_instance.position = Vector3(float(position[0]), float(position[1]), float(position[2]))
+	elif height > 0.0:
+		# Center cylinder on parent so feet sit near parent origin / Centrar cilindro en el padre
+		mesh_instance.position = Vector3(0.0, height * 0.5, 0.0)
+	_mark_unsaved()
+	return {
+		"ok": true,
+		"node_path": _rel_path(mesh_instance),
+		"radius": radius,
+		"height": height,
+		"position": _vector3_to_array(mesh_instance.position),
+	}
+
+func _tool_set_mesh_subproperty(node: Node, node_path: String, sub_property: String, raw_value: Variant) -> Dictionary:
+	if not node is MeshInstance3D:
+		return {"ok": false, "error": "mesh/* properties require MeshInstance3D on %s" % node_path}
+	var mesh_instance := node as MeshInstance3D
+	if mesh_instance.mesh == null:
+		mesh_instance.mesh = CylinderMesh.new()
+	if not _property_exists_on_object(mesh_instance.mesh, sub_property):
+		return {
+			"ok": false,
+			"error": "Mesh property not found: mesh/%s — use create_cylinder_mesh instead." % sub_property,
+		}
+	mesh_instance.mesh.set(sub_property, _coerce_value(raw_value))
+	_mark_unsaved()
+	return {
+		"ok": true,
+		"node_path": node_path,
+		"property": "mesh/%s" % sub_property,
+		"value": mesh_instance.mesh.get(sub_property),
+	}
+
+func _mesh_from_dict(spec: Dictionary) -> Mesh:
+	var kind: String = String(spec.get("type", spec.get("kind", ""))).to_lower()
+	if kind in ["cylindermesh", "cylinder"]:
+		var cylinder := CylinderMesh.new()
+		var radius: float = float(spec.get("radius", spec.get("top_radius", 0.4)))
+		cylinder.top_radius = radius
+		cylinder.bottom_radius = float(spec.get("bottom_radius", radius))
+		cylinder.height = float(spec.get("height", 1.8))
+		return cylinder
+	if kind in ["boxmesh", "box"]:
+		var box := BoxMesh.new()
+		var size_arr: Array = spec.get("size", [1, 1, 1])
+		if size_arr.size() >= 3:
+			box.size = Vector3(float(size_arr[0]), float(size_arr[1]), float(size_arr[2]))
+		return box
+	return null
+
+func _property_exists_on_object(obj: Object, property_name: String) -> bool:
+	if obj == null:
+		return false
+	for prop_info in obj.get_property_list():
+		if String(prop_info.name) == property_name:
+			return true
+	return false
 
 func _tool_get_tilemap_cells(params: Dictionary) -> Dictionary:
 	var node := _get_node_by_path(String(params.get("node_path", "")))

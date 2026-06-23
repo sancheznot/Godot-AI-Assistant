@@ -328,6 +328,10 @@ func _migrate_legacy_config() -> void:
 		settings["obsidian_rest_url"] = "https://127.0.0.1:27124"
 	if not settings.has("obsidian_max_results"):
 		settings["obsidian_max_results"] = 12
+	if not settings.has("harness_mode"):
+		settings["harness_mode"] = "core"
+	if not settings.has("enable_native_tool_calling"):
+		settings["enable_native_tool_calling"] = true
 
 func _migrate_api_keys_to_secrets() -> void:
 	if secrets_manager == null or not config.has("ai_models"):

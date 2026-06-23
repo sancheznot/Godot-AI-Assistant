@@ -57,7 +57,10 @@ func build_system_prompt(user_prompt: String, options: Dictionary, agent_mode: b
 	if bool(options.get("enable_tools", config_manager.get_setting("enable_editor_tools", true))):
 		if editor_tools:
 			layers.append("tools")
-			sections.append(String(editor_tools.get_tools_prompt()))
+			var use_native: bool = bool(
+				options.get("enable_native_tool_calling", config_manager.get_setting("enable_native_tool_calling", true))
+			)
+			sections.append(String(editor_tools.get_tools_prompt(use_native)))
 	
 	if agent_mode:
 		layers.append("agent")
@@ -227,6 +230,32 @@ func _normalize_line_for_dedupe(line: String) -> String:
 	return regex.sub(normalized, " ", true).strip_edges()
 
 func _get_agent_instructions() -> String:
+	if editor_tools != null and editor_tools.has_method("is_core_harness_mode") and editor_tools.is_core_harness_mode():
+		return _get_core_agent_instructions()
+	return _get_full_agent_instructions()
+
+func _get_core_agent_instructions() -> String:
+	var native: bool = bool(config_manager.get_setting("enable_native_tool_calling", true))
+	var tool_hint: String = (
+		"Use native API tool_calls when available."
+		if native
+		else "Every step that needs edits MUST include valid <tool_call>{\"tool\":\"...\",\"params\":{...}}</tool_call> — NEVER empty tags."
+	)
+	return (
+		"## Agent mode (core harness)\n"
+		+ "Edit Godot scripts and scenes directly. Web/Obsidian/asset-download tools are OFF.\n"
+		+ tool_hint
+		+ "\n"
+		+ "- Questions → answer in ONE step, no tools.\n"
+		+ "- Tasks → act immediately; no plans, no emoji spam.\n"
+		+ "- Scripts: read_script then create_script (same path to edit).\n"
+		+ "- Scenes: create_scene/open_scene → wait one step if not loaded → add_node/set_node_property.\n"
+		+ "- BEFORE final summary: get_script_errors once (parse/compile). "
+		+ "get_runtime_errors is NOT available in core mode — tell the user to press F5 to playtest.\n"
+		+ "- Fix any reported errors, verify again once, then short final summary in the user's language."
+	)
+
+func _get_full_agent_instructions() -> String:
 	return (
 		"## Agent mode\n"
 		+ "You act over multiple steps using editor tools to ACTUALLY perform the user's task.\n"
@@ -251,7 +280,9 @@ func _get_agent_instructions() -> String:
 		+ "After create_scene or open_scene, wait for next step before calling scene tools (the editor needs a frame to load).\n"
 		+ "UI/2D scenes: read_script first, then create_script with the SAME path.\n"
 		+ "Do NOT loop save_scene + get_script_errors. Verify once, then give a final summary in the user's language.\n"
-		+ "Only reply with a final summary AFTER the task is done (max 8 lines, no emoji spam)."
+		+ "BEFORE the final summary (mandatory after script/scene edits): "
+		+ "(1) get_script_errors — parse/compile; (2) get_runtime_errors — debugger panel/console (user must F5 first for in-game errors).\n"
+		+ "Only reply with a final summary AFTER verification passes or runtime check is empty with playtest noted (max 8 lines, no emoji spam)."
 	)
 
 func _load_base_context() -> String:

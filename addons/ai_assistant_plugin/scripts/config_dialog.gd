@@ -68,8 +68,8 @@ func setup(
 		skills_catalog.download_completed.connect(_on_skill_download_completed)
 		skills_catalog.download_failed.connect(_on_skill_download_failed)
 	title = _tr("config.title")
-	min_size = Vector2i(720, 620)
-	size = Vector2i(760, 680)
+	min_size = Vector2i(800, 720)
+	size = Vector2i(900, 820)
 	unresizable = false
 	close_requested.connect(hide)
 	_build_ui()
@@ -98,18 +98,14 @@ func _build_ui() -> void:
 	shell.add_child(_make_header())
 	
 	var tabs := TabContainer.new()
+	tabs.name = "ConfigTabs"
+	tabs.clip_contents = true
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	shell.add_child(tabs)
 	
-	var general_scroll := ScrollContainer.new()
-	general_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	general_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	general_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	var general_content := VBoxContainer.new()
-	general_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	general_content.add_theme_constant_override("separation", 12)
-	general_scroll.add_child(general_content)
+	var general_scroll := _make_scroll_tab()
+	var general_content: VBoxContainer = general_scroll.get_child(0) as VBoxContainer
 	general_content.add_child(_make_section_header(_tr("config.general"), _tr("config.general_hint")))
 	general_content.add_child(_make_settings_section())
 	tabs.add_child(general_scroll)
@@ -121,24 +117,50 @@ func _build_ui() -> void:
 	tabs.add_child(_make_indexing_tab())
 	tabs.set_tab_title(tabs.get_tab_count() - 1, _tr("config.indexing"))
 	
-	var providers_scroll := ScrollContainer.new()
-	providers_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	providers_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	providers_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	var providers_content := VBoxContainer.new()
-	providers_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	providers_content.add_theme_constant_override("separation", 12)
-	providers_scroll.add_child(providers_content)
+	var providers_scroll := _make_scroll_tab()
+	var providers_content: VBoxContainer = providers_scroll.get_child(0) as VBoxContainer
 	providers_content.add_child(_make_section_header(_tr("config.providers"), _tr("config.providers_hint")))
 	for provider_id in config_manager.PROVIDER_IDS:
 		providers_content.add_child(_make_provider_section(provider_id))
 	tabs.add_child(providers_scroll)
 	tabs.set_tab_title(providers_scroll.get_index(), _tr("config.providers"))
 	
-	shell.add_child(_make_footer())
+	var footer := _make_footer()
+	footer.size_flags_vertical = Control.SIZE_SHRINK_END
+	shell.add_child(footer)
+	call_deferred("_finalize_scroll_tabs", tabs)
+
+func _make_scroll_tab() -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	# ponytail: don't let inner content height become the window min height
+	scroll.custom_minimum_size = Vector2(0, 240)
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	content.add_theme_constant_override("separation", 12)
+	scroll.add_child(content)
+	scroll.resized.connect(_sync_scroll_content_width.bind(scroll, content))
+	return scroll
+
+func _sync_scroll_content_width(scroll: ScrollContainer, content: Control) -> void:
+	if scroll == null or content == null:
+		return
+	var inner_w: int = maxi(scroll.size.x - 16, 320)
+	if content.custom_minimum_size.x != inner_w:
+		content.custom_minimum_size.x = inner_w
+
+func _finalize_scroll_tabs(tabs: TabContainer) -> void:
+	for child in tabs.get_children():
+		if child is ScrollContainer:
+			_sync_scroll_content_width(child as ScrollContainer, (child as ScrollContainer).get_child(0) as Control)
 
 func _make_header() -> PanelContainer:
 	var panel := PanelContainer.new()
+	panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL, 10))
 	
 	var box := VBoxContainer.new()
@@ -250,36 +272,51 @@ func _make_settings_section() -> PanelContainer:
 	grid.add_child(max_tokens)
 	
 	grid.add_child(_make_field_label(_tr("config.include_context")))
-	var include_context := CheckBox.new()
-	include_context.name = "IncludeContext"
-	include_context.button_pressed = bool(config_manager.get_setting("include_project_context", true))
-	include_context.text = _tr("config.include_context_hint")
-	_style_checkbox(include_context)
-	grid.add_child(include_context)
+	grid.add_child(_make_checkbox_cell(
+		"IncludeContext",
+		bool(config_manager.get_setting("include_project_context", true)),
+		_tr("config.include_context_hint")
+	))
 	
 	grid.add_child(_make_field_label(_tr("config.enable_tools")))
-	var enable_tools := CheckBox.new()
-	enable_tools.name = "EnableTools"
-	enable_tools.button_pressed = bool(config_manager.get_setting("enable_editor_tools", true))
-	enable_tools.text = _tr("config.enable_tools_hint")
-	_style_checkbox(enable_tools)
-	grid.add_child(enable_tools)
+	grid.add_child(_make_checkbox_cell(
+		"EnableTools",
+		bool(config_manager.get_setting("enable_editor_tools", true)),
+		_tr("config.enable_tools_hint")
+	))
+	
+	grid.add_child(_make_field_label(_tr("config.harness_mode")))
+	var harness_mode := OptionButton.new()
+	harness_mode.name = "HarnessMode"
+	harness_mode.add_item(_tr("config.harness_mode_core"), 0)
+	harness_mode.set_item_metadata(0, "core")
+	harness_mode.add_item(_tr("config.harness_mode_full"), 1)
+	harness_mode.set_item_metadata(1, "full")
+	var current_harness: String = String(config_manager.get_setting("harness_mode", "core")).strip_edges().to_lower()
+	harness_mode.selected = 1 if current_harness == "full" else 0
+	_style_option_button(harness_mode)
+	grid.add_child(harness_mode)
+	
+	grid.add_child(_make_field_label(_tr("config.enable_native_tools")))
+	grid.add_child(_make_checkbox_cell(
+		"EnableNativeToolCalling",
+		bool(config_manager.get_setting("enable_native_tool_calling", true)),
+		_tr("config.enable_native_tools_hint")
+	))
 	
 	grid.add_child(_make_field_label(_tr("config.enable_thinking")))
-	var enable_thinking := CheckBox.new()
-	enable_thinking.name = "EnableThinking"
-	enable_thinking.button_pressed = bool(config_manager.get_setting("enable_thinking", true))
-	enable_thinking.text = _tr("config.enable_thinking_hint")
-	_style_checkbox(enable_thinking)
-	grid.add_child(enable_thinking)
+	grid.add_child(_make_checkbox_cell(
+		"EnableThinking",
+		bool(config_manager.get_setting("enable_thinking", true)),
+		_tr("config.enable_thinking_hint")
+	))
 	
 	grid.add_child(_make_field_label(_tr("config.enable_agent")))
-	var enable_agent := CheckBox.new()
-	enable_agent.name = "EnableAgentLoop"
-	enable_agent.button_pressed = bool(config_manager.get_setting("enable_agent_loop", true))
-	enable_agent.text = _tr("config.enable_agent_hint")
-	_style_checkbox(enable_agent)
-	grid.add_child(enable_agent)
+	grid.add_child(_make_checkbox_cell(
+		"EnableAgentLoop",
+		bool(config_manager.get_setting("enable_agent_loop", true)),
+		_tr("config.enable_agent_hint")
+	))
 	
 	grid.add_child(_make_field_label(_tr("config.agent_max_steps")))
 	var agent_steps := SpinBox.new()
@@ -300,12 +337,11 @@ func _make_settings_section() -> PanelContainer:
 	web_search_hint.add_theme_color_override("font_color", COLOR_MUTED)
 	grid.add_child(web_search_hint)
 	grid.add_child(_make_field_label(_tr("config.enable_web_search")))
-	var enable_web_search := CheckBox.new()
-	enable_web_search.name = "EnableWebSearch"
-	enable_web_search.button_pressed = bool(config_manager.get_setting("enable_web_search", true))
-	enable_web_search.text = _tr("config.enable_web_search_hint")
-	_style_checkbox(enable_web_search)
-	grid.add_child(enable_web_search)
+	grid.add_child(_make_checkbox_cell(
+		"EnableWebSearch",
+		bool(config_manager.get_setting("enable_web_search", true)),
+		_tr("config.enable_web_search_hint")
+	))
 	grid.add_child(_make_field_label(_tr("config.web_search_provider")))
 	var web_provider := OptionButton.new()
 	web_provider.name = "WebSearchProvider"
@@ -1115,17 +1151,21 @@ func _make_footer() -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _make_panel_style(COLOR_PANEL, 8))
 	
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_END
-	row.add_theme_constant_override("separation", 8)
-	panel.add_child(row)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	panel.add_child(box)
 	
 	var hint := Label.new()
 	hint.text = _tr("config.save_hint")
-	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.add_theme_color_override("font_color", COLOR_MUTED)
-	row.add_child(hint)
+	box.add_child(hint)
+	
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
 	
 	var cancel_button := Button.new()
 	cancel_button.text = _tr("config.cancel")
@@ -1143,9 +1183,33 @@ func _make_footer() -> PanelContainer:
 	
 	return panel
 
+func _make_checkbox_cell(node_name: String, pressed: bool, hint_text: String) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 2)
+	var checkbox := CheckBox.new()
+	checkbox.name = node_name
+	checkbox.button_pressed = pressed
+	checkbox.text = ""
+	_style_checkbox(checkbox)
+	box.add_child(checkbox)
+	var hint := Label.new()
+	hint.text = hint_text
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.add_theme_color_override("font_color", COLOR_MUTED)
+	box.add_child(hint)
+	return box
+
+func _setting_checkbox(grid: Node, node_name: String) -> CheckBox:
+	var node := grid.find_child(node_name, true, false)
+	return node as CheckBox
+
 func _make_field_label(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.custom_minimum_size.x = 168
 	label.add_theme_font_size_override("font_size", 12)
 	label.add_theme_color_override("font_color", COLOR_MUTED)
 	return label
@@ -1272,13 +1336,27 @@ func _on_save_pressed() -> void:
 		config_manager.set_setting("context_depth", String(context_depth_node.get_item_metadata(context_depth_node.selected)))
 		config_manager.set_setting("temperature", float(settings_grid.get_node("Temperature").value))
 		config_manager.set_setting("max_tokens", int(settings_grid.get_node("MaxTokens").value))
-		config_manager.set_setting("include_project_context", settings_grid.get_node("IncludeContext").button_pressed)
-		config_manager.set_setting("enable_editor_tools", settings_grid.get_node("EnableTools").button_pressed)
-		config_manager.set_setting("enable_thinking", settings_grid.get_node("EnableThinking").button_pressed)
-		config_manager.set_setting("enable_agent_loop", settings_grid.get_node("EnableAgentLoop").button_pressed)
+		config_manager.set_setting("include_project_context", _setting_checkbox(settings_grid, "IncludeContext").button_pressed)
+		config_manager.set_setting("enable_editor_tools", _setting_checkbox(settings_grid, "EnableTools").button_pressed)
+		var harness_mode_node := settings_grid.get_node_or_null("HarnessMode") as OptionButton
+		if harness_mode_node:
+			config_manager.set_setting(
+				"harness_mode",
+				String(harness_mode_node.get_item_metadata(harness_mode_node.selected))
+			)
+		var native_cb := _setting_checkbox(settings_grid, "EnableNativeToolCalling")
+		if native_cb:
+			config_manager.set_setting("enable_native_tool_calling", native_cb.button_pressed)
+		var thinking_cb := _setting_checkbox(settings_grid, "EnableThinking")
+		if thinking_cb:
+			config_manager.set_setting("enable_thinking", thinking_cb.button_pressed)
+		var agent_cb := _setting_checkbox(settings_grid, "EnableAgentLoop")
+		if agent_cb:
+			config_manager.set_setting("enable_agent_loop", agent_cb.button_pressed)
 		config_manager.set_setting("agent_max_steps", int(settings_grid.get_node("AgentMaxSteps").value))
-		if settings_grid.has_node("EnableWebSearch"):
-			config_manager.set_setting("enable_web_search", settings_grid.get_node("EnableWebSearch").button_pressed)
+		var web_cb := _setting_checkbox(settings_grid, "EnableWebSearch")
+		if web_cb:
+			config_manager.set_setting("enable_web_search", web_cb.button_pressed)
 		var web_provider_node := settings_grid.get_node_or_null("WebSearchProvider") as OptionButton
 		if web_provider_node:
 			config_manager.set_setting(
@@ -1393,7 +1471,15 @@ func open_dialog() -> void:
 		if model_catalog:
 			model_catalog.refresh_all()
 		_refresh_index_status_label()
-	popup_centered()
+	var open_size := Vector2i(900, 820)
+	size = open_size
+	min_size = Vector2i(800, 720)
+	popup_centered(open_size)
+	call_deferred("_ensure_window_size", open_size)
+
+func _ensure_window_size(target: Vector2i) -> void:
+	size = target
+	min_size = Vector2i(800, 720)
 
 func _populate_provider_models(provider_id: String, option: OptionButton, selected_model: String) -> void:
 	option.clear()
