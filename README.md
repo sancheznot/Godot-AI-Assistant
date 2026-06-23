@@ -143,50 +143,23 @@ Only **MiniMax-M3** accepts `image_url` / `video_url` in chat. All other MiniMax
 
 ## Installation
 
+### From the Godot Asset Library
+
+Search for **Golem-AI**, install, then enable it in **Project → Project Settings → Plugins**.
+It installs to `res://addons/ai_assistant_plugin/`.
+
 ### Manual
 
-1. Copy this folder into your project:
-
-   ```
-   your_project/addons/ai_assistant_plugin/
-   ```
-
-2. Open **Project → Project Settings → Plugins**
-3. Enable **AI Assistant Plugin**
-4. Open the **AI Assistant** dock tab in the editor
+Copy the `addons/ai_assistant_plugin/` folder from this repo into your project's `addons/`, then enable the plugin in Project Settings.
 
 ### From GitHub
 
 ```bash
-git clone https://github.com/sancheznot/Godot-AI-Assistant.git addons/ai_assistant_plugin
+git clone https://github.com/sancheznot/Godot-AI-Assistant.git
+cp -r Godot-AI-Assistant/addons/ai_assistant_plugin your_project/addons/
 ```
 
-Then enable the plugin in Project Settings.
-
-### Git safety (plugin vs game project)
-
-If you develop inside a larger Godot game, keep **two separate git repos**:
-
-| Repo | Folder | Remote |
-|------|--------|--------|
-| **Golem-AI plugin** | `addons/ai_assistant_plugin/` | `Godot-AI-Assistant` |
-| **Your game** | project root | your game remote |
-
-In the **game** `.gitignore`, ignore the plugin folder so nested git does not mix:
-
-```gitignore
-addons/ai_assistant_plugin/
-```
-
-After `git clone` or `git init` in this folder, install the guard hook:
-
-```bash
-cd addons/ai_assistant_plugin
-./install_git_hooks.sh
-./scripts/verify_git_repo.sh
-```
-
-The pre-commit hook blocks commits if `plugin.cfg` is missing, `origin` is wrong, or game paths (`Maps/`, `Data/`, …) are staged.
+Then enable the plugin in Project Settings and open the **Golem-AI** dock tab.
 
 ## Quick start
 
@@ -265,26 +238,26 @@ Chat history is saved under `user://ai_assistant_plugin/chat_history.json`.
 ## Project structure
 
 ```
-ai_assistant_plugin/
+Godot-AI-Assistant/             # repo root (for GitHub / Asset Library)
+├── README.md
+├── LICENSE
 ├── icon.png
-├── docs/                      # AssetLib previews
+├── docs/                       # AssetLib previews
 │   ├── preview_dock.jpg
 │   ├── preview_autocomplete.jpg
 │   └── preview_models.jpg
-├── plugin.cfg
-├── config/
-├── harness/                   # System prompt layers
-├── locales/                   # en.json, es.json
-├── scenes/                    # Dock UI
-├── scripts/
-│   ├── ui_plugin.gd           # Chat UI, history, attachments
-│   ├── ai_model_handler.gd    # Providers, multimodal, agent loop
-│   ├── model_capabilities.gd  # Vision/thinking heuristics
-│   ├── composer_attachments.gd
-│   ├── model_catalog.gd
-│   ├── chat_history.gd
-│   └── …
-└── skills/                    # Built-in skills (.md)
+└── addons/
+    └── ai_assistant_plugin/    # the plugin (installs here in your project)
+        ├── plugin.cfg
+        ├── config/
+        ├── harness/            # System prompt layers
+        ├── locales/            # en.json, es.json
+        ├── scenes/             # Dock UI
+        ├── scripts/
+        │   ├── ui_plugin.gd
+        │   ├── ai_model_handler.gd
+        │   └── …
+        └── skills/             # Built-in skills (.md)
 ```
 
 ## Contributing

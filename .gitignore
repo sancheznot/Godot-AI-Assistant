@@ -5,19 +5,3 @@
 # OS
 .DS_Store
 Thumbs.db
-
-# Temp / debug
-scripts/_parse_check.gd
-managed_context/
-test_suite_analysis/
-
-# Personal cheatsheets (not for repo)
-assetlib_submit.txt
-
-# Local config with endpoints/models (API keys live in encrypted user:// store)
-config/plugin_config.json
-
-# Private / user-installed skills (catalog, personal cheatsheets)
-skills/local/*
-!skills/local/.gitkeep
-skills/private/
